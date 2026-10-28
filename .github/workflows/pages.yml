@@ -1,0 +1,36 @@
+# The song manager on GitHub Pages (https://kotmorderca.github.io/XMOD/, the simulator in sim/): web/manager.html with the
+# converter built to WebAssembly (wasi-sdk). Its firmware button installs a .fwsc picked from a release.
+name: song manager
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: wasi-sdk and Felucca
+        run: |
+          curl -sSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz | tar xz -C "$HOME"
+          tools/get_felucca.sh
+      - name: the page
+        run: |
+          WASI_SDK="$HOME/wasi-sdk-24.0-x86_64-linux" python3 tools/build_web.py
+          mkdir -p site/sim && cp build/web/xmod-songs.html site/index.html && cp build/web/xmod-sim.html site/sim/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

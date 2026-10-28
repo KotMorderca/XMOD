@@ -1,0 +1,17 @@
+# The Firmware Hub's signed build (https://thefirmwarehub.com/kb/#sign): a tag v* builds
+# build/xmod.fwsc on GitHub, attests it and attaches it to the tag's release.
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    uses: zvenson/fm1-build/.github/workflows/build.yml@v1
+    permissions:
+      contents: write        # the release
+      id-token: write        # the signing certificate
+      attestations: write    # the attestation
+    with:
+      build: ./build.sh --release "${GITHUB_REF_NAME#v}"
+      packages: build/xmod.fwsc
+      test: make -C host test-ci

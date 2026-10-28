@@ -1,0 +1,6 @@
+build/
+third_party/ref/
+third_party/Felucca/
+__pycache__/
+songs-local/
+dev/

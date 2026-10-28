@@ -1,0 +1,8 @@
+{
+  "what": "A MOD / XM tracker, sampler and groovebox: play, write and save FastTracker 2 and ProTracker songs on the FM-1, up to 32 channels, with a ProTracker mode for MODs and a song manager in the browser for moving songs to and from the computer.",
+  "kinds": [
+    "tracker"
+  ],
+  "play": "https://kotmorderca.github.io/XMOD/sim/",
+  "editor": "https://kotmorderca.github.io/XMOD/"
+}

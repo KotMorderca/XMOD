@@ -1,0 +1,372 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- XMOD song manager. The source: tools/build_web.py inlines the scripts, the converter
+     (WebAssembly) and the firmware package into build/web/xmod-songs.html, one file that opens
+     from the disk in Chrome or Edge (WebSerial, WebMIDI). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FM-1 Tracker Songs</title>
+<style>
+:root {
+  --bg: #101424; --panel: #1a2036; --line: #262e4c; --text: #dce0ec; --dim: #8088a4; --hi: #ffd860;
+  --acc: #285ca0; --acc2: #3a74c4; --ok: #50dc78; --warn: #ff6040; --ins: #6ec8ff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+header { background: var(--acc); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+header h1 { font-size: 18px; margin: 0; font-weight: 650; }
+header h1 span { color: var(--hi); }
+#status { color: #dbe6ff; font-size: 14px; flex: 1; min-width: 200px; }
+main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+h2 { font-size: 15px; margin: 0 0 10px; color: var(--hi); font-weight: 600; letter-spacing: .02em; }
+button, .btn { background: var(--acc); color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+button:hover:not(:disabled), .btn:hover { background: var(--acc2); }
+button:disabled { opacity: .45; cursor: default; }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+button.ghost:hover:not(:disabled) { background: var(--line); }
+button.danger:hover:not(:disabled) { background: #8c2a2a; border-color: #8c2a2a; }
+table { width: 100%; border-collapse: collapse; }
+td, th { padding: 7px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+th { color: var(--dim); font-weight: 500; font-size: 13px; }
+td.num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.act { text-align: right; white-space: nowrap; }
+td.act button { padding: 5px 9px; font-size: 13px; margin-left: 4px; }
+.badge { color: var(--ok); font-size: 12px; margin-left: 6px; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 6px 0 12px; }
+.bar i { display: block; height: 100%; background: var(--ok); width: 0; transition: width .2s; }
+.note { color: var(--dim); font-size: 13px; margin: 6px 0 0; }
+#drop { border: 2px dashed var(--line); border-radius: 10px; padding: 22px; text-align: center; color: var(--dim); }
+#drop.over { border-color: var(--hi); color: var(--text); }
+.jobs { margin-top: 10px; display: grid; gap: 6px; }
+.job { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; font-size: 14px; }
+.job .bar { grid-column: 1 / -1; margin: 0; }
+.job .msg { color: var(--dim); }
+.job.err .msg { color: var(--warn); }
+.job.done .msg { color: var(--ok); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+details { color: var(--dim); font-size: 13px; }
+pre { white-space: pre-wrap; margin: 6px 0 0; max-height: 220px; overflow: auto; }
+.hidden { display: none; }
+.empty { color: var(--dim); padding: 10px 0; }
+menu { position: absolute; margin: 4px 0 0; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; list-style: none; z-index: 2; right: 0; }
+menu button { display: block; width: 100%; text-align: left; background: transparent; margin: 0; }
+menu button:hover { background: var(--line); }
+.dl { position: relative; display: inline-block; }
+@media (max-width: 560px) { td.act button { margin: 2px 0 2px 4px; } td.num.seq { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>FM-1 <span>Tracker</span> · Songs</h1>
+  <div id="status">Not connected</div>
+  <button id="connect">Connect the FM-1</button>
+</header>
+<main>
+  <section id="nosupport" class="hidden">
+    <h2>This browser cannot talk to the FM-1</h2>
+    <p>Open this page in Chrome or Edge on a computer: they have WebSerial (songs) and WebMIDI (firmware).</p>
+  </section>
+
+  <section>
+    <h2>Songs on the FM-1</h2>
+    <div class="bar"><i id="flashbar"></i></div>
+    <div id="flashtext" class="note" style="margin-top:-6px"></div>
+    <table>
+      <thead><tr><th>Name</th><th>Size</th><th class="seq">Saved</th><th></th></tr></thead>
+      <tbody id="songs"><tr><td colspan="4" class="empty">Connect the FM-1 to see its songs.</td></tr></tbody>
+    </table>
+    <p class="note">The songs built into the firmware are not listed here. A song in use on the FM-1 cannot be deleted. Saving on the FM-1 (SAVE page) also lands here.</p>
+  </section>
+
+  <section>
+    <h2>Add songs</h2>
+    <div id="drop">Drop .xm, .mod or .fmtk files here (or a backup .zip)<br><br>
+      <label class="btn">Choose files<input id="pick" type="file" multiple accept=".xm,.mod,.fmtk,.zip" hidden></label>
+    </div>
+    <div class="jobs" id="jobs"></div>
+  </section>
+
+  <section>
+    <h2>Backup</h2>
+    <div class="row">
+      <button id="backup" disabled>Download all songs (.zip)</button>
+      <label class="btn">Restore from a .zip<input id="restore" type="file" accept=".zip" hidden></label>
+    </div>
+    <p class="note">A backup holds the songs as .fmtk images; restoring adds them as new songs.</p>
+  </section>
+
+  <section>
+    <h2>Firmware</h2>
+    <div class="row">
+      <button id="fwembedded">Install XMOD</button>
+      <label class="btn ghost" style="border:1px solid var(--line);background:transparent">Install a .fwsc file…<input id="fwfile" type="file" accept=".fwsc" hidden></label>
+    </div>
+    <div class="bar"><i id="fwbar"></i></div>
+    <div id="fwtext" class="note">Over USB-MIDI, as Felucca's installer. The songs in flash stay. The official FM-1 file (V15) puts the stock firmware back.</div>
+  </section>
+
+  <details><summary>Log</summary><pre id="log"></pre></details>
+</main>
+
+<script type="module">
+/*@MODULES@*/
+
+const WASM_B64 = "/*@WASM@*/";
+const FW_B64 = "/*@FW@*/";
+const FW_NAME = "/*@FWNAME@*/";
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+const log = (m) => { logEl.textContent += m + "\n"; };
+const unb64 = (s) => { const t = atob(s), o = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) o[i] = t.charCodeAt(i); return o; };
+const kb = (n) => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+const fileBase = (n) => n.replace(/\.[^.]*$/, "");
+
+let conv = null, fm = null, port = null, info = {};
+const convReady = loadConverter(unb64(WASM_B64)).then((c) => { conv = c; }).catch((e) => log("converter: " + e.message));
+
+if (!("serial" in navigator)) $("nosupport").classList.remove("hidden");
+if (!FW_B64.length || FW_B64.startsWith("/*")) $("fwembedded").classList.add("hidden");
+else $("fwembedded").textContent = `Install ${FW_NAME}`;
+
+function save(data, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([data]));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function setStatus(t) { $("status").textContent = t; }
+
+async function connect() {
+  if (fm) return disconnect();
+  try {
+    port = await navigator.serial.requestPort({ filters: [] });
+    await port.open({ baudRate: 115200 });
+    await port.setSignals({ dataTerminalReady: true });
+    const reader = port.readable.getReader(), writer = port.writable.getWriter();
+    fm = new FM1Songs({
+      write: (b) => writer.write(b),
+      read: async () => { const r = await reader.read(); return r.done ? null : r.value; },
+      close: async () => { try { await reader.cancel(); } catch (_) {} reader.releaseLock(); writer.releaseLock(); await port.close(); },
+    }, log);
+    fm._transport_close = fm.t.close;
+    window.fm1 = fm;                                 // (for debugging from the console)
+    info = await fm.start();
+    $("connect").textContent = "Disconnect";
+    $("backup").disabled = false;
+    await refresh();
+  } catch (e) {
+    log("connect: " + e.message);
+    setStatus(e.name === "NotFoundError" ? "Not connected" : "Could not connect: " + e.message);
+    await disconnect(true);
+  }
+}
+
+async function disconnect(quiet) {
+  const f = fm;
+  fm = null;
+  if (f && f._transport_close) await f._transport_close().catch(() => {});
+  else if (port) await port.close().catch(() => {});
+  port = null;
+  $("connect").textContent = "Connect the FM-1";
+  $("backup").disabled = true;
+  if (!quiet) setStatus("Not connected");
+  $("songs").innerHTML = '<tr><td colspan="4" class="empty">Connect the FM-1 to see its songs.</td></tr>';
+}
+
+async function refresh() {
+  if (!fm) return;
+  info = await fm.info();
+  const songs = await fm.list();
+  const used = info.flash_total - info.flash_free;
+  $("flashbar").style.width = `${(100 * used / info.flash_total).toFixed(1)}%`;
+  $("flashtext").textContent = `${kb(used)} used of ${kb(info.flash_total)} · ${kb(info.flash_free)} free`;
+  setStatus(`Connected: ${info.fw} · ${songs.length} song${songs.length === 1 ? "" : "s"} · playing now: ${info.name || "(no name)"}${info.changed ? " (unsaved changes)" : ""}`);
+  const tb = $("songs");
+  tb.innerHTML = "";
+  if (!songs.length) tb.innerHTML = '<tr><td colspan="4" class="empty">No songs in flash yet: add some below, or SAVE one on the FM-1.</td></tr>';
+  for (const s of songs) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = s.name || "(no name)";
+    if (s.index === info.slot_loaded) { const b = document.createElement("span"); b.className = "badge"; b.textContent = "loaded"; name.append(b); }
+    const size = document.createElement("td"); size.className = "num"; size.textContent = kb(s.size);
+    const seq = document.createElement("td"); seq.className = "num seq"; seq.textContent = `#${s.seq}`;
+    const act = document.createElement("td"); act.className = "act";
+    const btn = (label, fn, cls = "ghost") => { const b = document.createElement("button"); b.className = cls; b.textContent = label; b.onclick = () => fn(b); act.append(b); return b; };
+    btn("Load", () => doLoad(s));
+    const dl = document.createElement("span"); dl.className = "dl";
+    const dlb = document.createElement("button"); dlb.className = "ghost"; dlb.textContent = "Download ▾";
+    dlb.onclick = (ev) => { ev.stopPropagation(); openMenu(dl, s); };
+    dl.append(dlb); act.append(dl);
+    btn("Rename", () => doRename(s));
+    const del = btn("Delete", () => doDelete(s), "ghost danger");
+    if (s.index === info.slot_loaded) del.disabled = true;
+    tr.append(name, size, seq, act);
+    tb.append(tr);
+  }
+}
+
+function openMenu(where, s) {
+  document.querySelectorAll("menu").forEach((m) => m.remove());
+  const m = document.createElement("menu");
+  for (const [label, kind] of [["XM (FastTracker 2)", "xm"], ["MOD (ProTracker)", "mod"], ["FMTK (the FM-1's own)", "fmtk"]]) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => { m.remove(); doDownload(s, kind); };
+    m.append(b);
+  }
+  where.append(m);
+  setTimeout(() => document.addEventListener("click", () => m.remove(), { once: true }), 0);
+}
+
+async function guard(what, fn) {
+  try { return await fn(); }
+  catch (e) { log(`${what}: ${e.message}`); alert(`${what}: ${e.message}`); }
+}
+
+const doLoad = (s) => guard("Load", async () => {
+  try { await fm.load(s.index); }
+  catch (e) {
+    if (!/unsaved/.test(e.message) || !confirm("The song on the FM-1 has unsaved changes. Load anyway (they are lost)?")) throw e;
+    await fm.load(s.index, true);
+  }
+  await refresh();
+});
+
+const doDownload = (s, kind) => guard("Download", async () => {
+  await convReady;
+  setStatus(`Reading ${s.name}…`);
+  const img = await fm.get(s.index);
+  const base = (s.name || "song").replace(/[\\/:*?"<>|]/g, "_");
+  if (kind === "fmtk") save(img, `${base}.fmtk`);
+  else if (kind === "xm") save(conv.toXM(img), `${base}.xm`);
+  else {
+    const r = conv.toMOD(img);
+    if (r.warning) log(`${s.name}: ${r.warning}`);
+    if (r.warning && !confirm(`Not everything fits a MOD:\n${r.warning}\n\nSave the MOD anyway?`)) return refresh();
+    save(r.data, `${base}.mod`);
+  }
+  await refresh();
+});
+
+const doRename = (s) => guard("Rename", async () => {
+  const n = prompt("New name (up to 23 letters):", s.name);
+  if (n === null || !n.trim()) return;
+  await fm.rename(s.index, n.trim());
+  await refresh();
+});
+
+const doDelete = (s) => guard("Delete", async () => {
+  if (!confirm(`Delete "${s.name}" from the FM-1?`)) return;
+  await fm.remove(s.index);
+  await refresh();
+});
+
+// ------------------------------------------------------------------ adding songs
+function job(name) {
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = '<span class="n"></span><span class="msg"></span><div class="bar"><i></i></div>';
+  el.querySelector(".n").textContent = name;
+  $("jobs").prepend(el);
+  return {
+    msg: (t, cls) => { el.querySelector(".msg").textContent = t; if (cls) el.className = "job " + cls; },
+    bar: (f) => { el.querySelector("i").style.width = `${Math.round(f * 100)}%`; },
+  };
+}
+
+async function addFiles(files) {
+  if (!fm) { alert("Connect the FM-1 first."); return; }
+  await convReady;
+  const items = [];
+  for (const f of files) {
+    const data = new Uint8Array(await f.arrayBuffer());
+    if (/\.zip$/i.test(f.name)) {
+      try { for (const z of unzipFiles(data)) if (/\.(xm|mod|fmtk)$/i.test(z.name)) items.push({ name: z.name.split("/").pop(), data: z.data }); }
+      catch (e) { job(f.name).msg(e.message, "err"); }
+    } else items.push({ name: f.name, data });
+  }
+  for (const it of items) {
+    const j = job(it.name);
+    try {
+      let img = it.data;
+      const isFile = new TextDecoder().decode(img.subarray(0, 4)) !== "FMTK";
+      if (isFile) { j.msg("converting…"); img = conv.toImage(it.data); }
+      const room = (info.flash_free || 0) - 64;      // (the slot's header)
+      if (img.length > room && isFile) {           // too big: 16-bit samples as 8-bit?
+        const small = conv.toImage8(it.data);
+        if (small.length < img.length && small.length <= room &&
+            confirm(`${it.name} needs ${kb(img.length)}, the FM-1 has ${kb(Math.max(0, room))} free.\n\nStore its 16-bit samples as 8-bit (${kb(small.length)})? They sound a little rougher.`))
+          img = small;
+      }
+      if (img.length > room) throw new Error(`does not fit: ${kb(img.length)}, ${kb(Math.max(0, room))} free (delete songs first)`);
+      const name = fileBase(it.name).replace(/^\d+ /, "").slice(0, 23);
+      j.msg(`sending ${kb(img.length)}…`);
+      const slot = await fm.put(img, name, (p) => j.bar(p));
+      j.bar(1);
+      j.msg(`on the FM-1 (song ${slot + 1})`, "done");
+    } catch (e) {
+      j.msg(e.message, "err");
+      log(`${it.name}: ${e.message}`);
+    }
+    await refresh().catch(() => {});
+  }
+}
+
+$("pick").onchange = (e) => { addFiles([...e.target.files]); e.target.value = ""; };
+$("restore").onchange = (e) => { addFiles([...e.target.files]); e.target.value = ""; };
+const drop = $("drop");
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles([...e.dataTransfer.files]); };
+
+$("backup").onclick = () => guard("Backup", async () => {
+  const songs = await fm.list(), files = [];
+  for (const s of songs) {
+    setStatus(`Backing up ${s.name}…`);
+    files.push({ name: `${String(s.index + 1).padStart(2, "0")} ${(s.name || "song").replace(/[\\/:*?"<>|]/g, "_")}.fmtk`, data: await fm.get(s.index) });
+  }
+  save(zipFiles(files), `fm1-songs-${new Date().toISOString().slice(0, 10)}.zip`);
+  await refresh();
+});
+
+$("connect").onclick = connect;
+
+// --------------------------------------------------------------------- firmware
+async function install(pkg) {
+  const bar = $("fwbar"), txt = $("fwtext");
+  if (!navigator.requestMIDIAccess) { txt.textContent = "This browser has no WebMIDI: use Chrome or Edge."; return; }
+  let product;
+  try { product = productOf(pkg); } catch (e) { txt.textContent = e.message; return; }
+  if (!confirm(`Install ${product} on the FM-1? Keep the USB cable in until it is done.`)) return;
+  if (fm) await disconnect(true);
+  const image = logicalImage(pkg);
+  let midi;
+  try { midi = await navigator.requestMIDIAccess({ sysex: true }); }
+  catch (e) { txt.textContent = "MIDI access was refused (it is needed for the update)."; return; }
+  const total = Math.ceil(image.length / 512);
+  const steps = { start: "starting", verify: "checking", loader: "the update loader starts", write: "writing", reboot: "restarting", done: "done" };
+  try {
+    await new Updater(midi, log).install(image, product, (s, n) => {
+      txt.textContent = `${steps[s] || s}${typeof n === "number" ? ` (${n})` : ""}`;
+      if (s === "write" && typeof n === "number") bar.style.width = `${Math.min(100, 100 * n / total).toFixed(0)}%`;
+      if (s === "done") bar.style.width = "100%";
+    });
+    txt.textContent = `Installed: the FM-1 runs ${product}. Connect again to see its songs.`;
+  } catch (e) {
+    txt.textContent = e.message;
+    log("install: " + e.message);
+  }
+}
+
+$("fwembedded").onclick = () => install(unb64(FW_B64));
+$("fwfile").onchange = async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) install(new Uint8Array(await f.arrayBuffer())); };
+</script>
+</body>
+</html>

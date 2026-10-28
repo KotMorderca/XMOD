@@ -1,0 +1,12 @@
+*.sh text eol=lf
+*.py text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.mjs text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+Makefile text eol=lf
+*.cmd text eol=crlf
+*.xm binary
+*.mod binary
+*.png binary

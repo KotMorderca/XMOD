@@ -1,0 +1,273 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- XMOD in the browser: the FM-1's own pages, player and song slots (host/websim.c, WebAssembly) on
+     a drawing of its panel. tools/build_web.py inlines the panel and the WebAssembly into
+     build/web/xmod-sim.html. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XMOD Simulator</title>
+<style>
+:root { --bg: #101424; --panel: #1a2036; --line: #262e4c; --text: #dce0ec; --dim: #8b91aa; --hi: #ffd860; --acc: #285ca0; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+header { background: var(--acc); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+header h1 { font-size: 18px; margin: 0; }
+header h1 span { color: var(--hi); }
+header .note { color: #dbe6ff; font-size: 14px; flex: 1; }
+header a { color: #fff; }
+main { max-width: 1200px; margin: 0 auto; padding: 14px 16px 30px; }
+#device { position: relative; user-select: none; touch-action: none; }
+#device svg { width: 100%; height: auto; display: block; }
+#device .btn, #device .knob, #device .key { cursor: pointer; }
+#device .knob { cursor: ns-resize; }
+#screen-canvas { width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+#start { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(10, 12, 24, .55);
+         border-radius: 18px; pointer-events: none; }
+#start span { background: var(--acc); padding: 14px 22px; border-radius: 10px; font-size: 18px; font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; flex: 1; min-width: 280px; }
+h2 { font-size: 15px; color: var(--hi); margin: 0 0 8px; }
+kbd { background: #2e3244; border: 1px solid #3b4057; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+td { padding: 3px 6px 3px 0; vertical-align: top; }
+td:first-child { white-space: nowrap; }
+.dim { color: var(--dim); }
+button { background: var(--acc); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+#drop.over { outline: 2px dashed var(--hi); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>XMOD</span> Simulator</h1>
+  <div class="note">The FM-1 tracker firmware's own code, in the browser.</div>
+  <a href="../">Song manager</a>
+  <a href="https://github.com/KotMorderca/XMOD">Source</a>
+</header>
+<main id="drop">
+  <div id="device">
+    <!--@PANEL@-->
+    <div id="start"><span>Click or press a key to start (sound on)</span></div>
+  </div>
+  <div class="row">
+    <section>
+      <h2>Mouse</h2>
+      <table>
+        <tr><td>Buttons, keys</td><td>click; hold for the hold actions (SEL, ARP, GLO, EDIT)</td></tr>
+        <tr><td>Knobs</td><td>mouse wheel, or drag up and down</td></tr>
+        <tr><td>Songs</td><td>drop .xm / .mod files here: they load as built-in songs (SAVE page)</td></tr>
+      </table>
+      <p class="dim">Songs you SAVE are kept in this browser. <button class="ghost" id="wipe">Erase the simulated flash</button></p>
+    </section>
+    <section>
+      <h2>Keyboard</h2>
+      <table>
+        <tr><td><kbd>Z</kbd>&ndash;<kbd>/</kbd>, <kbd>Q</kbd>&ndash;<kbd>T</kbd></td><td>notes (C4 up), as in FastTracker</td></tr>
+        <tr><td><kbd>Space</kbd> <kbd>Enter</kbd></td><td>PLAY, REC</td></tr>
+        <tr><td><kbd>Shift</kbd></td><td>EDIT (held)</td></tr>
+        <tr><td><kbd>&uarr;</kbd><kbd>&darr;</kbd> <kbd>&larr;</kbd><kbd>&rarr;</kbd></td><td>SELECT, ALGORITHM</td></tr>
+        <tr><td><kbd>PgUp</kbd><kbd>PgDn</kbd></td><td>PRESETS</td></tr>
+        <tr><td><kbd>F1</kbd>&ndash;<kbd>F7</kbd></td><td>HOME SEQ ENV LFO GLO SAVE FX</td></tr>
+        <tr><td><kbd>Ins</kbd> <kbd>Del</kbd></td><td>SEL (note off), ARP (delete)</td></tr>
+        <tr><td><kbd>-</kbd> <kbd>=</kbd></td><td>OCT-, OCT+</td></tr>
+        <tr><td><kbd>[</kbd><kbd>]</kbd> <kbd>9</kbd><kbd>0</kbd> <kbd>O</kbd><kbd>P</kbd> <kbd>K</kbd><kbd>&apos;</kbd></td><td>KNOB 1, 2, 3, 4 (down, up)</td></tr>
+      </table>
+    </section>
+  </div>
+</main>
+<script type="module">
+const WASM_B64 = "/*@SIMWASM@*/";
+const BTN = { OCTDN: 0, OCTUP: 1, FX: 2, SEL: 3, ENV: 4, LFO: 5, EDIT: 6, GLO: 7, HOME: 8, SAVE: 9, ARP: 10, SEQ: 11, PLAY: 12, REC: 13 };
+const ENC = { SELECT: 0, ALGORITHM: 1, K1: 2, K2: 3, K3: 4, K4: 5, PRESETS: 6 };
+const LIT = { PLAY: "#50dc78", REC: "#ff4a4a" };
+const STORE = "xmod-sim-flash";
+
+const unb64 = (s) => { const t = atob(s), o = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) o[i] = t.charCodeAt(i); return o; };
+const b64 = (u) => { let s = ""; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+
+let mem;
+const wasi = new Proxy({}, { get: (_, name) => () => { if (name === "proc_exit") throw new Error("exit"); return 0; } });
+const { instance } = await WebAssembly.instantiate(unb64(WASM_B64), { wasi_snapshot_preview1: wasi });
+const x = instance.exports;
+mem = x.memory;
+if (x._initialize) x._initialize();
+
+// the flash kept from the last visit
+x.sim_flash_clear();
+try {
+  const kept = localStorage.getItem(STORE);
+  if (kept) { const d = unb64(kept); if (d.length === x.sim_flash_size()) new Uint8Array(mem.buffer, x.sim_flash_ptr(), d.length).set(d); }
+} catch (_) {}
+
+// ------------------------------------------------------------------ input
+let pressed = 0, released = 0, held = 0, notes = 0, notesHeld = 0, gain = 0.7, started = false, ctx = null;
+const enc = new Int32Array(7);
+const down = (b) => { if (!(held & (1 << b))) { held |= 1 << b; pressed |= 1 << b; } };
+const up = (b) => { if (held & (1 << b)) { held &= ~(1 << b); released |= 1 << b; } };
+const keyDown = (k) => { if (!(notesHeld & (1 << k))) { notesHeld |= 1 << k; notes |= 1 << k; } };
+const keyUp = (k) => { notesHeld &= ~(1 << k); };
+const capture = (el, e) => { try { el.setPointerCapture(e.pointerId); } catch (_) {} };
+const angle = {};
+function turn(name, steps) {
+  angle[name] = (angle[name] || 0) + steps * 18;
+  const dial = document.querySelector(`#k-${name} .dial`);
+  const c = document.querySelector(`#k-${name} circle`);
+  if (dial && c) dial.setAttribute("transform", `rotate(${angle[name]} ${c.getAttribute("cx")} ${c.getAttribute("cy")})`);
+  if (name === "MASTER") gain = Math.min(1, Math.max(0, gain + steps * 0.05));
+  else enc[ENC[name]] += steps;
+}
+
+for (const el of document.querySelectorAll("#device .btn")) {
+  const b = BTN[el.dataset.name];
+  el.addEventListener("pointerdown", (e) => { capture(el, e); down(b); });
+  el.addEventListener("pointerup", () => up(b));
+  el.addEventListener("pointercancel", () => up(b));
+}
+for (const el of document.querySelectorAll("#device .key")) {
+  const k = +el.dataset.key;
+  el.addEventListener("pointerdown", (e) => { capture(el, e); keyDown(k); });
+  el.addEventListener("pointerup", () => keyUp(k));
+  el.addEventListener("pointercancel", () => keyUp(k));
+}
+for (const el of document.querySelectorAll("#device .knob")) {
+  const name = el.dataset.name;
+  el.addEventListener("wheel", (e) => { e.preventDefault(); turn(name, e.deltaY < 0 ? 1 : -1); }, { passive: false });
+  let y0 = null;
+  el.addEventListener("pointerdown", (e) => { capture(el, e); y0 = e.clientY; });
+  el.addEventListener("pointermove", (e) => {
+    if (y0 === null) return;
+    const d = Math.trunc((y0 - e.clientY) / 12);
+    if (d) { turn(name, d); y0 -= d * 12; }
+  });
+  el.addEventListener("pointerup", () => { y0 = null; });
+}
+
+const PIANO = { z: 7, s: 8, x: 9, d: 10, c: 11, v: 12, g: 13, b: 14, h: 15, n: 16, j: 17, m: 18, ",": 19, l: 20, ".": 21, ";": 22, "/": 23,
+                q: 19, 2: 20, w: 21, 3: 22, e: 23, r: 24, 5: 25, t: 26 };
+const KEYBTN = { " ": "PLAY", Enter: "REC", Shift: "EDIT", F1: "HOME", F2: "SEQ", F3: "ENV", F4: "LFO", F5: "GLO", F6: "SAVE", F7: "FX",
+                 Insert: "SEL", Delete: "ARP", Backspace: "ARP", "-": "OCTDN", "=": "OCTUP" };
+const KEYKNOB = { ArrowUp: ["SELECT", -1], ArrowDown: ["SELECT", 1], ArrowLeft: ["ALGORITHM", -1], ArrowRight: ["ALGORITHM", 1],
+                  PageUp: ["PRESETS", 1], PageDown: ["PRESETS", -1], "[": ["K1", -1], "]": ["K1", 1], 9: ["K2", -1], 0: ["K2", 1],
+                  o: ["K3", -1], p: ["K3", 1], k: ["K4", -1], "'": ["K4", 1] };
+// the key without Shift (Shift is EDIT: EDIT+knob, EDIT+OCT)
+const CODE = { BracketLeft: "[", BracketRight: "]", Digit9: "9", Digit0: "0", Digit2: "2", Digit3: "3", Digit5: "5", Quote: "'",
+               Minus: "-", Equal: "=", Comma: ",", Period: ".", Semicolon: ";", Slash: "/" };
+const keyName = (e) => CODE[e.code] || (e.key.length === 1 ? e.key.toLowerCase() : e.key);
+addEventListener("keydown", (e) => {
+  if (e.target.closest && e.target.closest("input, textarea")) return;
+  const k = keyName(e);
+  if (k in KEYKNOB) { turn(...KEYKNOB[k]); e.preventDefault(); return; }
+  if (e.repeat) { if (k in PIANO || k in KEYBTN) e.preventDefault(); return; }
+  if (k in PIANO && !e.ctrlKey && !e.metaKey && !e.altKey) { keyDown(PIANO[k]); e.preventDefault(); return; }
+  if (k in KEYBTN) { down(BTN[KEYBTN[k]]); e.preventDefault(); }
+});
+addEventListener("keyup", (e) => {
+  const k = keyName(e);
+  if (k in PIANO) keyUp(PIANO[k]);
+  if (k in KEYBTN) up(BTN[KEYBTN[k]]);
+});
+addEventListener("blur", () => { for (const n in BTN) up(BTN[n]); notesHeld = 0; });
+
+// ------------------------------------------------------------------ the screen, the LEDs
+const canvas = document.getElementById("screen-canvas");
+const g = canvas.getContext("2d");
+const img = g.createImageData(240, 240);
+const ledEls = Object.entries(BTN).map(([n, id]) => [id, n, document.querySelector(`#b-${n} .led`)]);
+const keyEls = [...Array(27)].map((_, k) => document.getElementById(`key-${k}`));
+const keyBase = keyEls.map((el) => el.getAttribute("fill"));
+
+function draw() {
+  const px = new Uint16Array(mem.buffer, x.sim_fb(), 240 * 240), d = img.data;
+  for (let i = 0; i < px.length; i++) {
+    const v = px[i];
+    d[4 * i] = ((v >> 11) & 31) * 255 / 31;
+    d[4 * i + 1] = ((v >> 5) & 63) * 255 / 63;
+    d[4 * i + 2] = (v & 31) * 255 / 31;
+    d[4 * i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const leds = new Uint8Array(mem.buffer, x.sim_leds(), 41);
+  for (const [id, n, el] of ledEls) {
+    if (!el) continue;
+    const on = leds[id] || (held & (1 << id));
+    el.setAttribute("fill", leds[id] ? (LIT[n] || "#ffd860") : "#000");
+    el.setAttribute("opacity", on ? "1" : "0.35");
+  }
+  keyEls.forEach((el, k) => {
+    const on = leds[14 + k] || (notesHeld & (1 << k));
+    el.setAttribute("fill", on ? (leds[14 + k] ? "#6ec8ff" : "#ffd860") : keyBase[k]);
+  });
+}
+
+// ------------------------------------------------------------------ the frame, the sound
+let savedWrites = x.sim_flash_writes(), lastSave = 0;
+function frame() {
+  x.sim_input(pressed, released, held, notes, notesHeld);
+  for (let i = 0; i < 7; i++) if (enc[i]) { x.sim_enc(i, enc[i]); enc[i] = 0; }
+  pressed = released = notes = 0;
+  x.sim_frame();
+  draw();
+  const w = x.sim_flash_writes();
+  if (w !== savedWrites && performance.now() - lastSave > 1000) {     // the songs saved: kept in the browser
+    savedWrites = w;
+    lastSave = performance.now();
+    try { localStorage.setItem(STORE, b64(new Uint8Array(mem.buffer, x.sim_flash_ptr(), x.sim_flash_size()))); } catch (_) {}
+  }
+}
+
+function start() {
+  if (started) {
+    if (ctx.state === "suspended") ctx.resume();
+    return;
+  }
+  started = true;
+  document.getElementById("start").remove();
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let first = true;                               // (the first visit: the theme plays at once)
+  try { first = !localStorage.getItem(STORE + "-seen"); localStorage.setItem(STORE + "-seen", "1"); } catch (_) {}
+  x.sim_init(ctx.sampleRate, first ? 1 : 0);
+  const node = ctx.createScriptProcessor(2048, 0, 2);
+  node.onaudioprocess = (e) => {
+    const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1), n = L.length;
+    const f = new Float32Array(mem.buffer, x.sim_audio(n), 2 * n);
+    for (let i = 0; i < n; i++) { L[i] = f[2 * i] * gain; R[i] = f[2 * i + 1] * gain; }
+  };
+  node.connect(ctx.destination);
+  setInterval(frame, 20);
+}
+// any click or key starts it (and the sound: browsers wait for one)
+addEventListener("pointerdown", start, true);
+addEventListener("keydown", (e) => { if (!["Shift", "Control", "Alt", "Meta", "Tab"].includes(e.key)) start(); }, true);
+
+document.getElementById("wipe").onclick = () => {
+  if (!confirm("Erase the songs saved in the simulator?")) return;
+  try { localStorage.removeItem(STORE); } catch (_) {}
+  location.reload();
+};
+
+const drop = document.getElementById("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  start();
+  for (const file of e.dataTransfer.files) {
+    const data = new Uint8Array(await file.arrayBuffer());
+    const name = new TextEncoder().encode(file.name.replace(/\.[^.]*$/, "").slice(0, 23) + "\0");
+    const p = x.buf_alloc(data.length), q = x.buf_alloc(name.length);
+    new Uint8Array(mem.buffer, p, data.length).set(data);
+    new Uint8Array(mem.buffer, q, name.length).set(name);
+    if (x.sim_add_song(p, data.length, q)) {
+      const m = new Uint8Array(mem.buffer, x.sim_message());
+      alert(`${file.name}: ${new TextDecoder().decode(m.subarray(0, m.indexOf(0)))}`);
+    }
+    x.buf_free(p);
+    x.buf_free(q);
+  }
+});
+</script>
+</body>
+</html>
