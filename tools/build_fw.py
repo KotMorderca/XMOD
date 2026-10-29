@@ -4,14 +4,15 @@
 
   tools/build_fw.py [--songs DIR]
 
-Outputs in build/fw/: xmod.bin (the app), loader/ota.bin (Felucca's update loader, unchanged)
-and xmod.fwsc (the installable package). Install it with Felucca's installer:
+Outputs in build/fw/: xmod.bin (the app), loader/ota.bin (Felucca's update loader, patched: it keeps
+the app area's tail, where XMOD keeps songs, firmware/layout.h) and xmod.fwsc (the installable package). Install it with Felucca's installer:
 
   python third_party/Felucca/tools/fm1_install.py build/fw/xmod.fwsc
 
 The hardware layer (boot, LCD, panel matrix, I2S, USB-MIDI/serial, flash, the M-UPGRADE update
 entry, the update loader and the package format) is Felucca's (third_party/Felucca, GPL-3.0-only,
-Hugelton Instruments), used unmodified. The loader build and the image assembly below follow
+Hugelton Instruments), used unmodified, except the update loader's app area (loader_patch below) and
+the app slot's size (firmware/layout.h). The loader build and the image assembly below follow
 Felucca's tools/build.py.
 
 Needs: the JieLi Linux toolchain (JIELI_TOOLCHAIN, default ~/.jieli/toolchain: Felucca's
@@ -38,6 +39,11 @@ import fm1pkg_make  # noqa: E402
 import lz4blk  # noqa: E402
 
 APP_XIP = 0x02000120
+LAYOUT = {m[0]: int(m[1], 16) for m in re.findall(r"#define (XMOD_\w+) (0x[0-9A-Fa-f]+)u",
+                                                  (FW / "layout.h").read_text())}
+APP_HI, TAIL_HI = LAYOUT["XMOD_APP_HI"], LAYOUT["XMOD_APP_AREA_HI"]   # (TAIL_HI: the app area's end)
+SONGS_LO, SONGS_HI = LAYOUT["XMOD_APP_HI"], LAYOUT["XMOD_SONGS_HI"]   # (XMOD_SONGS_LO is XMOD_APP_HI)
+fm1pkg_make.APP_SLOT = LAYOUT["XMOD_APP_SLOT"]     # (the package's app.bin slot: XMOD's app only)
 LOADER_LOAD = 0x01C0A800
 LOADER_NAME = b"usb_hid_ota.bin"
 PRODUCT = os.environ.get("XMOD_ID", "FM-1_666")   # the USB identity (The Firmware Hub: our own)
@@ -143,12 +149,85 @@ def ldr_wrap(image):
     return ldr_head(crc16(body), 0x20, len(body), 0x41, LOADER_NAME) + body
 
 
+# Felucca's loader writes the whole app area [0x4000, 0x93000). XMOD's writes [0x4000, XMOD_APP_HI) only:
+# the tail holds songs. A package with anything but erased bytes in the tail (another firmware, an
+# older XMOD) is refused before anything is erased (-15): its own loader would wipe the songs anyway,
+# this one would leave it half installed. The songs reach over [0x93000, 0x97000), between the app area
+# and Felucca's store, where Felucca's loader looks for update records to erase (the stock firmware's
+# may be there): XMOD's looks there too, except in the sectors a song holds (a slot header below them
+# reaches in), whose bytes may look like a record. The patched copy goes to build/fw/loader/src (loader.c with
+# it: its "ldr_core.c" is looked up next to it first); host/ldrtest.c tests the same copy.
+XMOD_GAP_SCAN = r"""/* XMOD (tools/build_fw.py): the sectors of [LDR_REC_LO, LDR_DATA_LO) that hold a song: a slot
+ * header (firmware/store.c: "FMSL", version 1, the image's size) at or below them reaches in */
+static uint8_t xmod_gap[(LDR_DATA_LO - LDR_REC_LO) >> 12];
+static void xmod_scan_gap(void)
+{
+    uint32_t off = 0x{songs_lo:X}u, h[3], n, k;
+    for (k = 0; k < sizeof xmod_gap; k++)
+        xmod_gap[k] = 0;
+    while (off < LDR_DATA_LO) {
+        n = 1;
+        if (!ldr_fread(off, h, 12) && h[0] == 0x4C534D46u && h[1] == 1u && h[2] >= 64u &&
+            h[2] <= 0x{songs_hi:X}u - off - 64u) {
+            n = (64u + h[2] + 0xFFFu) >> 12;
+            for (k = off; k < off + (n << 12); k += 0x1000u)
+                if (k >= LDR_REC_LO && k < LDR_DATA_LO)
+                    xmod_gap[(k - LDR_REC_LO) >> 12] = 1;
+        }
+        off += n << 12;
+    }
+}
+"""
+
+LOADER_PATCH = [
+    ("#define LDR_NSEC ((LDR_APP_HI - LDR_APP_LO) >> 12)\n",
+     "#define LDR_NSEC ((LDR_APP_HI - LDR_APP_LO) >> 12)\n"
+     "#define LDR_KEEP_LO 0x{app_hi:X}u                    /* XMOD: [LDR_KEEP_LO, LDR_APP_HI) holds songs, never written */\n"),
+    ("    if ((rc = ldr_check(fl_off, fl_size, want, sc, sec)) != 0)\n        return rc;\n",
+     "    if ((rc = ldr_check(fl_off, fl_size, want, sc, sec)) != 0)\n        return rc;\n"
+     "    for (k = 0; k < 0x1000u; k++)                    /* XMOD: the package's tail must be erased */\n"
+     "        cur[k] = 0xFFu;\n"
+     "    for (s = LDR_KEEP_LO; s < LDR_APP_HI; s += 0x1000u)\n"
+     "        if (sc[(s - LDR_APP_LO) >> 12] != ota_crc16(cur, 0x1000u, 0))\n"
+     "            return -15;\n"),
+    ("    for (s = LDR_APP_LO; s < LDR_APP_HI; s += 0x1000u) {\n        uint32_t again;",
+     "    for (s = LDR_APP_LO; s < LDR_KEEP_LO; s += 0x1000u) {\n        uint32_t again;"),
+    ("        ldr_progress(done, LDR_APP_HI - LDR_APP_LO);", "        ldr_progress(done, LDR_KEEP_LO - LDR_APP_LO);"),
+    ("/* SFC cipher: per 32-byte block, key ^ (block offset >> 2) */\n",
+     XMOD_GAP_SCAN + "\n/* SFC cipher: per 32-byte block, key ^ (block offset >> 2) */\n"),
+    ("    for (s = LDR_REC_HI; s > LDR_REC_LO; s -= 0x1000u) {   /* flash records: 4K boundary - 256 */\n",
+     "    xmod_scan_gap();\n"
+     "    for (s = LDR_REC_HI; s > LDR_REC_LO; s -= 0x1000u) {   /* flash records: 4K boundary - 256 */\n"),
+    ("            continue;                                    /* Felucca's store: user data that may look like one */\n",
+     "            continue;                                    /* Felucca's store: user data that may look like one */\n"
+     "        if (s - 0x1000u < LDR_DATA_LO && xmod_gap[(s - 0x1000u - LDR_REC_LO) >> 12])\n"
+     "            continue;                                    /* XMOD: a song over the gap */\n"),
+]
+
+
+def loader_patch():
+    """Felucca's loader.c and ldr_core.c, patched, in build/fw/loader/src"""
+    src = FEL / "firmware" / "loader"
+    dst = LDR / "src"
+    dst.mkdir(parents=True, exist_ok=True)
+    core = (src / "ldr_core.c").read_text(encoding="utf-8")
+    for a, b in LOADER_PATCH:
+        if core.count(a) != 1:
+            raise SystemExit(f"loader patch: Felucca's ldr_core.c changed, {a.strip()[:50]!r} not found once")
+        core = core.replace(a, b.replace("{app_hi:X}", f"{APP_HI:X}").replace("{songs_lo:X}", f"{SONGS_LO:X}")
+                                  .replace("{songs_hi:X}", f"{SONGS_HI:X}"))
+    (dst / "ldr_core.c").write_text(core, encoding="utf-8")
+    (dst / "loader.c").write_text((src / "loader.c").read_text(encoding="utf-8"), encoding="utf-8")
+    return dst
+
+
 def build_loader():
     LDR.mkdir(parents=True, exist_ok=True)
     src = FEL / "firmware" / "loader"
-    inc = [f"-I{FEL / 'firmware' / 'hal'}", f"-I{FEL / 'firmware' / 'src'}"]
+    patched = loader_patch()
+    inc = [f"-I{FEL / 'firmware' / 'hal'}", f"-I{FEL / 'firmware' / 'src'}", f"-I{src}"]   # (loader.c's ../src/..)
     cc("-c", src / "crt0_ldr.S", "-o", LDR / "crt0_ldr.o")
-    cc("-Os", *inc, "-c", src / "loader.c", "-o", LDR / "loader.o")
+    cc("-Os", *inc, "-c", patched / "loader.c", "-o", LDR / "loader.o")
     elf = LDR / "loader.elf"
     run("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", src / "loader.ld",
         LDR / "crt0_ldr.o", LDR / "loader.o", "-o", elf)
@@ -175,6 +254,9 @@ def build_app():
     cc("-c", FEL / "firmware" / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o")
     cc("-c", FEL / "firmware" / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o")
     cc(os.environ.get("XMOD_OPT", "-Os"), *inc, f'-DFELUCCA_ID="{PRODUCT}"', f'-DFELUCCA_VERSION="{version()}"', "-c", FW / "xmod.c", "-o", OUT / "xmod.o")
+    m = re.search(r"XIP\s*\(rx\)\s*:\s*ORIGIN = 0x02000120, LENGTH = (0x[0-9A-Fa-f]+)", (FW / "app.ld").read_text())
+    if not m or int(m.group(1), 16) != fm1pkg_make.APP_SLOT:
+        raise SystemExit(f"firmware/app.ld: XIP LENGTH is not the app slot {fm1pkg_make.APP_SLOT:#x} (firmware/layout.h)")
     elf = OUT / "xmod.elf"
     run("pi32v2/bin/ld", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o", OUT / "fm1_isr.o",
         OUT / "xmod.o", "-o", elf, "-Map", OUT / "xmod.map")
@@ -241,7 +323,10 @@ def main():
     gen_songs(a.songs)
     ota = build_loader()
     img = build_app()
-    pkg = fm1pkg_make.ufw(fm1pkg_make.flash_image(img, fm1pkg_make.KEY), ota, PRODUCT)
+    flash = fm1pkg_make.flash_image(img, fm1pkg_make.KEY)
+    if flash[APP_HI:TAIL_HI] != b"\xff" * (TAIL_HI - APP_HI):
+        raise SystemExit(f"package: the app area has data past {APP_HI:#x} (firmware/layout.h): the songs' tail")
+    pkg = fm1pkg_make.ufw(flash, ota, PRODUCT)
     (OUT / "xmod.fwsc").write_bytes(pkg)
     print(f"package  {OUT / 'xmod.fwsc'}  {len(pkg)} B, identity {PRODUCT}")
 

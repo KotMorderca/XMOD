@@ -17,7 +17,7 @@ firmware's own pages and player on a picture of the FM-1 (mouse or computer keyb
 - **Instruments and samples**: volume and panning envelopes, loops, volume, panning, finetune.
 - **Mixer**: meters, mute and solo on the white keys, global volume, tempo, amplification.
 - **Effect help** on the screen for every XM effect.
-- **Songs in flash**: save, load, new, rename, delete; up to 32 songs in 292 KB.
+- **Songs in flash**: save, load, new, rename, delete; up to 32 songs in 608 KB.
 - **Over USB**: the song manager (serial), MIDI clock out and transport in, the FM-1 as an audio
   input (44.1 / 48 kHz).
 - Two example songs built in, made for XMOD (`songs/`, CC0).
@@ -28,16 +28,21 @@ USB identity: **FM-1_666**. License: **GPL-3.0-only** (see LICENSE and THIRD_PAR
 
 From [The Firmware Hub](https://thefirmwarehub.com/) or from this repository's releases
 (`xmod.fwsc`), with any FM-1 installer: the hub's page, Felucca's web installer, or
-`tools\install.cmd xmod.fwsc` from this repository. It installs over the official firmware (V15) and over other
-custom firmwares; installing another firmware later leaves XMOD the same way (XMOD keeps the update
+`tools\install.cmd xmod.fwsc` from this repository. It installs over the official firmware V15 (V16
+replaces the FM-1's boot loader: XMOD is not tested on it) and over other custom firmwares; installing another firmware later leaves XMOD the same way (XMOD keeps the update
 entry: the next update starts as usual). If the FM-1 ever does not start: hold OCT- and OCT+ at
-power-on (update mode), then install again.
+power-on (update mode), then install again. After installing XMOD from Felucca the FM-1 may not
+restart by itself: switch it off and on.
 
-**Your data.** XMOD keeps its songs in the flash area other firmwares use for their projects
+**Your data.** XMOD keeps its songs in 0x48000..0xE0000: the end of the app area (which XMOD's own app
+leaves free and XMOD's updates keep) and the flash area other firmwares use for their projects
 (0x97000..0xE0000, Felucca's data store). It cannot read what another firmware saved there, and its
-first save overwrites it (other firmwares' data is not in a form XMOD understands, and the FM-1 has
-no other room for songs). Back up before you switch (with that firmware's own backup), and before
-leaving XMOD back up its songs with the song manager (Backup: a .zip of every song).
+first save overwrites it (other firmwares' data is not in a form XMOD understands). Installing another
+firmware rewrites the whole app area (up to 0x93000): the songs kept there are lost; the official
+firmware also clears the rest (its settings area): every song is lost. Back up before you switch
+(with that firmware's own backup), and before leaving XMOD back up its songs with the song manager
+(Backup: a .zip of every song). The FM-1's other areas (the official firmware's settings and voice
+banks, 0xE8000..0xFC000) are never written.
 
 Then open the song manager (below).
 
@@ -104,7 +109,7 @@ one in Device Manager (Ports, the FM-1's USB serial device, Port Settings, Advan
 | channels | 32 (XM's maximum) |
 | patterns | 256, up to 256 rows each; packed in 176 KB of RAM |
 | instruments, samples | 128 instruments, 2048 samples; the sample data in flash |
-| songs in flash | 32 songs, 292 KB for all of them |
+| songs in flash | 32 songs, 608 KB for all of them (one song up to 608 KB) |
 | undo | 2048 changes |
 | clipboard | 256 rows x 32 channels |
 
@@ -116,9 +121,10 @@ Felucca's `tools/get_toolchain.sh` installs it) and the JieLi AC79 SDK
 or set `AC79_SDK`).
 
 ```
-./build.sh [--release 1.0.0]     # -> build/xmod.fwsc (fetches Felucca into third_party/Felucca)
+./build.sh [--release 1.1.0]     # -> build/xmod.fwsc (fetches Felucca into third_party/Felucca)
 make -C host                     # the PC tools
 make -C host test                # song memory and flash song slot tests
+make -C host ldrtest OLD=old.fwsc  # after the firmware build: the update loader keeps the songs
 python3 tools/build_web.py       # build/web/xmod-songs.html (song manager), xmod-sim.html (simulator):
                                  # after ./build.sh or tools/get_felucca.sh; wasi-sdk 24 (WASI_SDK=path)
 ```

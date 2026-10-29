@@ -1355,8 +1355,9 @@ static void tick_replayer(void)
 static void voice_update_volumes(int i, uint8_t status)
 {
     voice_t *v = &voice[i];
-    v->tgt_l = (int32_t)(((v->vol_q16 * ft2_sqrt_pan[256 - v->pan]) >> 16) << 8);
-    v->tgt_r = (int32_t)(((v->vol_q16 * ft2_sqrt_pan[v->pan]) >> 16) << 8);
+    /* 64-bit product: full volume (65536) at a hard pan (65536) is 2^32 */
+    v->tgt_l = (int32_t)((((uint64_t)v->vol_q16 * ft2_sqrt_pan[256 - v->pan]) >> 16) << 8);
+    v->tgt_r = (int32_t)((((uint64_t)v->vol_q16 * ft2_sqrt_pan[v->pan]) >> 16) << 8);
     if (status & CS_TRIGGER_VOICE) {
         if (v->vol_l > 0 || v->vol_r > 0) {        /* fade the old note out over 5 ms */
             voice_t *f = &voice[FMT_MAX_CHANNELS + i];

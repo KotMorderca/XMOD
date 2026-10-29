@@ -98,7 +98,12 @@ if (x._initialize) x._initialize();
 x.sim_flash_clear();
 try {
   const kept = localStorage.getItem(STORE);
-  if (kept) { const d = unb64(kept); if (d.length === x.sim_flash_size()) new Uint8Array(mem.buffer, x.sim_flash_ptr(), d.length).set(d); }
+  // (XMOD 1.0.0 kept only the store 0x97000..0xE0000: the end of today's area)
+  const OLD = 0xE0000 - 0x97000, size = x.sim_flash_size();
+  if (kept) {
+    const d = unb64(kept);
+    if (d.length === size || d.length === OLD) new Uint8Array(mem.buffer, x.sim_flash_ptr() + size - d.length, d.length).set(d);
+  }
 } catch (_) {}
 
 // ------------------------------------------------------------------ input

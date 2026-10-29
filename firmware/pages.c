@@ -341,6 +341,17 @@ static void move_chan(int32_t d, uint32_t n, uint32_t nch)
         ui.win = 0;
 }
 
+/* the mixer: the window of n channels moves (no cursor shown there); the cursor channel stays in it */
+static void scroll_win(int32_t d, uint32_t n, uint32_t nch)
+{
+    int32_t top = nch > n ? (int32_t)(nch - n) : 0;
+    ui.win = (uint8_t)clampi((int32_t)ui.win + d, 0, top);
+    if (ui.chan < ui.win)
+        ui.chan = ui.win;
+    if (ui.chan >= ui.win + n)
+        ui.chan = (uint8_t)(ui.win + n - 1u);
+}
+
 /* -------------------------------------------------------------- effect help --- */
 typedef struct { char code; const char *par, *name, *desc; } fx_info;
 static const fx_info FXS[] = {
@@ -1620,7 +1631,7 @@ static void pages_frame(const ui_in *in)
         if (in->pressed & BIT(BTN_OCTDN))
             ui.bank = 0;
         if (in->enc[ENC_ALGO])
-            move_chan(in->enc[ENC_ALGO] * ((in->held & BIT(BTN_EDIT)) ? (ui.view[PG_GLO] ? 8 : 4) : 1), ui.view[PG_GLO] ? 8u : 4u, nch);
+            scroll_win(in->enc[ENC_ALGO] * ((in->held & BIT(BTN_EDIT)) ? (ui.view[PG_GLO] ? 8 : 4) : 1), ui.view[PG_GLO] ? 8u : 4u, nch);
         glo_knobs(in, st);
         if ((in->pressed & BIT(BTN_SEL)) && is_mod(h)) {    /* ProTracker mode on / off */
             player_set_pt_mode(!player_pt_mode());

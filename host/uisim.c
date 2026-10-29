@@ -22,6 +22,7 @@
 #include "song.h"
 #include "fmt.h"
 #include "modconv.h"
+#include "../firmware/layout.h"
 
 static volatile uint32_t fm1_ms;
 
@@ -63,12 +64,14 @@ static void sys_led(uint32_t id, int on) { if (id < 41u) leds[id] = (uint8_t)(on
 
 /* a NOR flash: erase sets 0xFF, programming only clears bits */
 static uint8_t flash[0x100000];
+/* the slots' area (firmware/layout.h) */
+#define IN_AREAS(off, n) ((off) >= XMOD_SONGS_LO && (off) + (n) <= XMOD_SONGS_HI)
 static uint32_t flash_erases, flash_progs;
 static int stp_ok(void) { return 1; }
 static int stp_read(uint32_t off, void *d, uint32_t n) { memcpy(d, flash + off, n); return 0; }
 static int stp_erase(uint32_t off)
 {
-    if (off & 0xFFFu || off < 0x97000u || off >= 0xE0000u)
+    if (off & 0xFFFu || !IN_AREAS(off, 0x1000u))
         return -8;
     memset(flash + off, 0xFF, 0x1000);
     flash_erases++;
@@ -77,7 +80,7 @@ static int stp_erase(uint32_t off)
 static int stp_prog(uint32_t off, const void *src, uint32_t n)
 {
     uint32_t i;
-    if (off < 0x97000u || off + n > 0xE0000u || n > 256u || (off & 0xFFu) + n > 256u)
+    if (!IN_AREAS(off, n) || n > 256u || (off & 0xFFu) + n > 256u)
         return -8;
     for (i = 0; i < n; i++)
         flash[off + i] &= ((const uint8_t *)src)[i];

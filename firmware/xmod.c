@@ -21,7 +21,7 @@
 #define FELUCCA_ID "FM-1_666"     /* (build_fw.py passes it too) */
 #endif
 #ifndef FELUCCA_VERSION
-#define FELUCCA_VERSION "XMOD 1.0.0"     /* (build.sh --release passes the tag's) */
+#define FELUCCA_VERSION "XMOD 1.1.0"     /* (build.sh --release passes the tag's) */
 #endif
 #define XMOD_FIRMWARE 1
 
@@ -42,8 +42,29 @@
 #include "lcd.c"
 #include "shim.h"                /* what Felucca's usb.c / ota.c expect from its core.h */
 #include "usb.c"
+/* XMOD keeps songs from the app area's tail on (layout.h): the flash driver may write there, and the
+ * storage calls (storage_hw.c: st_erase, st_prog) take it as a storage area */
+#include "layout.h"
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, XMOD_SONGS_LO, XMOD_SONGS_HI) || FL_STORE_OK(off, n) || \
+                             FL_IN(off, n, FL_OTA_LO, FL_OTA_HI))
 #include "fm1_flash.h"
+#undef FL_STORE_OK
+#define FL_STORE_OK(off, n) (FL_IN(off, n, XMOD_SONGS_LO, XMOD_SONGS_HI) || FL_IN(off, n, FL_DATA_LO, FL_DATA_HI) || \
+                             FL_IN(off, n, FL_GLOB_LO, FL_GLOB_HI) || FL_IN(off, n, FL_AUTO_LO, FL_VBANK_HI))
 #include "storage_hw.c"
+
+/* fl_plain_window_init with the window from the songs on: they are plain (the app below them is
+ * SFC-encrypted and stays decrypted) */
+static void xmod_plain_window_init(void)
+{
+    SFCENC_CON &= (uint8_t)~2u;
+    SFCENC_UNENC_L = FL_XIP(XMOD_SONGS_LO);
+    SFCENC_UNENC_H = 0x07FFFFFFu;
+    SFCENC_CON |= 2u;
+    __asm__ volatile("cli" ::: "memory");
+    fl_inval(XMOD_SONGS_LO, 0x100000u - XMOD_SONGS_LO);   /* drop any decrypted lines */
+    __asm__ volatile("csync\n\tsti" ::: "memory");
+}
 #include "ota.c"
 
 /* ------------------------------------------------------------- XMOD --- */

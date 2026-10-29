@@ -10,13 +10,16 @@
 #include <string.h>
 #include "song.h"
 #include "modconv.h"
+#include "../firmware/layout.h"
 
 static uint8_t flash[0x100000];
+/* the slots' area (firmware/layout.h) */
+#define IN_AREAS(off, n) ((off) >= XMOD_SONGS_LO && (off) + (n) <= XMOD_SONGS_HI)
 static int stp_ok(void) { return 1; }
 static int stp_read(uint32_t off, void *d, uint32_t n) { memcpy(d, flash + off, n); return 0; }
 static int stp_erase(uint32_t off)
 {
-    if (off & 0xFFFu || off < 0x97000u || off >= 0xE0000u) {
+    if (off & 0xFFFu || !IN_AREAS(off, 0x1000u)) {
         printf("bad erase %x\n", off);
         exit(1);
     }
@@ -26,7 +29,7 @@ static int stp_erase(uint32_t off)
 static int stp_prog(uint32_t off, const void *src, uint32_t n)
 {
     uint32_t i;
-    if (off < 0x97000u || off + n > 0xE0000u || n > 256u || (off & 0xFFu) + n > 256u) {
+    if (!IN_AREAS(off, n) || n > 256u || (off & 0xFFu) + n > 256u) {
         printf("bad prog %x %u\n", off, n);
         exit(1);
     }
@@ -102,6 +105,8 @@ static int check(int step)
     return 0;
 }
 
+static int rooms;
+
 int main(int argc, char **argv)
 {
     int i, step, saves = 0, full = 0, renames = 0;
@@ -124,7 +129,18 @@ int main(int argc, char **argv)
         img_n[nimg++] = (uint32_t)out_n;
     }
     memset(flash, 0xFF, sizeof flash);
+    {                                              /* the tail as after an update from a bigger app: */
+        uint32_t k, x = 12345u;                    /* not erased, no slot in it */
+        for (k = XMOD_SONGS_LO; k < XMOD_APP_AREA_HI; k++) {
+            x = x * 1103515245u + 12345u;
+            flash[k] = (uint8_t)(x >> 16);
+        }
+    }
     store_scan();
+    if (store_n) {
+        printf("old app code in the tail read as a slot\n");
+        return 1;
+    }
     song_load(img[0], img_n[0]);
     for (step = 0; step < 3000; step++) {
         uint32_t op = rnd() % 100;
@@ -162,7 +178,15 @@ int main(int argc, char **argv)
             song_save(NULL, NULL, &sz);
             b.b = malloc(sz);
             song_save(sink, &b, NULL);
-            off = store_save("t", replace, moved, &err);
+            {
+                uint32_t room = store_room();     /* (what the song manager is told) */
+                off = store_save("t", replace, moved, &err);
+                if (!replace && (off != 0) != (sz <= room)) {
+                    printf("step %d: store_room %u, size %u, saved %x err %d\n", step, room, sz, off, err);
+                    return 1;
+                }
+                rooms++;
+            }
             if (getenv("V")) {
                 int q;
                 printf("%d save replace=%x size=%u -> %x err %d src %x; slots:", step, replace, sz, off, err, src_off);

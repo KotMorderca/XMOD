@@ -8,7 +8,7 @@
  *   sim_input(pressed, released, held, notes, notes_held), sim_enc(i, steps), then sim_frame()
  *   sim_fb()                  240 x 240 RGB565 pixels;  sim_leds(): 41 bytes (buttons 0..13, keys 14..40)
  *   sim_audio(n)              n stereo frames, float, interleaved
- *   sim_flash_ptr(), sim_flash_writes()   the song slots' area (0x97000..0xE0000) and a write counter
+ *   sim_flash_ptr(), sim_flash_writes()   the song slots' areas (0x48000..0xE0000, firmware/layout.h) and a write counter
  *   sim_add_song(p, n, name)  an .xm / .mod as a built-in song, loaded; 0 ok (else sim_message())
  */
 #include <stdint.h>
@@ -65,15 +65,17 @@ static void sys_led(uint32_t id, int on) { if (id < 41u) leds[id] = (uint8_t)(on
 
 /* the flash: a NOR in RAM (erase sets 0xFF, programming only clears bits), the slots' area kept
  * by the page in the browser's storage */
-#define FL_LO 0x97000u
-#define FL_HI 0xE0000u
+#include "../firmware/layout.h"
+#define FL_LO XMOD_SONGS_LO
+#define FL_HI XMOD_SONGS_HI
+#define IN_AREAS(off, n) ((off) >= XMOD_SONGS_LO && (off) + (n) <= XMOD_SONGS_HI)
 static uint8_t flash[FL_HI];
 static uint32_t flash_writes;
 static int stp_ok(void) { return 1; }
 static int stp_read(uint32_t off, void *d, uint32_t n) { memcpy(d, flash + off, n); return 0; }
 static int stp_erase(uint32_t off)
 {
-    if (off & 0xFFFu || off < FL_LO || off >= FL_HI)
+    if (off & 0xFFFu || !IN_AREAS(off, 0x1000u))
         return -8;
     memset(flash + off, 0xFF, 0x1000);
     flash_writes++;
@@ -82,7 +84,7 @@ static int stp_erase(uint32_t off)
 static int stp_prog(uint32_t off, const void *src, uint32_t n)
 {
     uint32_t i;
-    if (off < FL_LO || off + n > FL_HI || n > 256u || (off & 0xFFu) + n > 256u)
+    if (!IN_AREAS(off, n) || n > 256u || (off & 0xFFu) + n > 256u)
         return -8;
     for (i = 0; i < n; i++)
         flash[off + i] &= ((const uint8_t *)src)[i];

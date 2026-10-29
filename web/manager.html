@@ -51,6 +51,11 @@ details { color: var(--dim); font-size: 13px; }
 pre { white-space: pre-wrap; margin: 6px 0 0; max-height: 220px; overflow: auto; }
 .hidden { display: none; }
 .empty { color: var(--dim); padding: 10px 0; }
+header button.ghost { border-color: rgba(255,255,255,.45); color: #fff; }
+header button.ghost:hover:not(:disabled) { background: var(--acc2); }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
+.head h2 { margin: 0; }
+.head button { padding: 5px 10px; font-size: 13px; }
 menu { position: absolute; margin: 4px 0 0; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; list-style: none; z-index: 2; right: 0; }
 menu button { display: block; width: 100%; text-align: left; background: transparent; margin: 0; }
 menu button:hover { background: var(--line); }
@@ -62,6 +67,7 @@ menu button:hover { background: var(--line); }
 <header>
   <h1>FM-1 <span>Tracker</span> · Songs</h1>
   <div id="status">Not connected</div>
+  <button id="reconnect" class="ghost hidden" title="Open the FM-1's port again, without choosing it">Reconnect</button>
   <button id="connect">Connect the FM-1</button>
 </header>
 <main>
@@ -71,14 +77,14 @@ menu button:hover { background: var(--line); }
   </section>
 
   <section>
-    <h2>Songs on the FM-1</h2>
+    <div class="head"><h2>Songs on the FM-1</h2><button id="refresh" class="ghost" disabled title="Read the list from the FM-1 again">Refresh</button></div>
     <div class="bar"><i id="flashbar"></i></div>
     <div id="flashtext" class="note" style="margin-top:-6px"></div>
     <table>
       <thead><tr><th>Name</th><th>Size</th><th class="seq">Saved</th><th></th></tr></thead>
       <tbody id="songs"><tr><td colspan="4" class="empty">Connect the FM-1 to see its songs.</td></tr></tbody>
     </table>
-    <p class="note">The songs built into the firmware are not listed here. A song in use on the FM-1 cannot be deleted. Saving on the FM-1 (SAVE page) also lands here.</p>
+    <p class="note">The songs built into the firmware are not listed here. Deleting the song in use on the FM-1 loads xmod-theme (built in) there. Saving on the FM-1 (SAVE page) also lands here.</p>
   </section>
 
   <section>
@@ -126,6 +132,10 @@ const kb = (n) => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)
 const fileBase = (n) => n.replace(/\.[^.]*$/, "");
 
 let conv = null, fm = null, port = null, info = {};
+// lastPort: the port of the last connection (reconnect opens it without the chooser);
+// autoReconnect: connected and not disconnected by hand, so a replugged FM-1 is opened again
+let lastPort = null, autoReconnect = false, connecting = false, installing = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const convReady = loadConverter(unb64(WASM_B64)).then((c) => { conv = c; }).catch((e) => log("converter: " + e.message));
 
 if (!("serial" in navigator)) $("nosupport").classList.remove("hidden");
@@ -142,29 +152,64 @@ function save(data, name) {
 
 function setStatus(t) { $("status").textContent = t; }
 
+function setConnected(on) {
+  $("connect").textContent = on ? "Disconnect" : "Connect the FM-1";
+  $("backup").disabled = !on;
+  $("refresh").disabled = !on;
+  $("reconnect").classList.toggle("hidden", !lastPort);
+}
+
+async function openPort(p) {
+  port = p;
+  await p.open({ baudRate: 115200 });
+  await p.setSignals({ dataTerminalReady: true });
+  const reader = p.readable.getReader(), writer = p.writable.getWriter();
+  fm = new FM1Songs({
+    write: (b) => writer.write(b),
+    read: async () => { const r = await reader.read(); return r.done ? null : r.value; },
+    close: async () => { try { await reader.cancel(); } catch (_) {} reader.releaseLock(); writer.releaseLock(); await p.close(); },
+  }, log);
+  fm._transport_close = fm.t.close;
+  window.fm1 = fm;                                 // (for debugging from the console)
+  info = await fm.start();
+  lastPort = p;
+  autoReconnect = true;
+  setConnected(true);
+  await refresh();
+}
+
 async function connect() {
-  if (fm) return disconnect();
+  if (fm) { autoReconnect = false; return disconnect(); }
+  if (connecting) return;
+  connecting = true;
   try {
-    port = await navigator.serial.requestPort({ filters: [] });
-    await port.open({ baudRate: 115200 });
-    await port.setSignals({ dataTerminalReady: true });
-    const reader = port.readable.getReader(), writer = port.writable.getWriter();
-    fm = new FM1Songs({
-      write: (b) => writer.write(b),
-      read: async () => { const r = await reader.read(); return r.done ? null : r.value; },
-      close: async () => { try { await reader.cancel(); } catch (_) {} reader.releaseLock(); writer.releaseLock(); await port.close(); },
-    }, log);
-    fm._transport_close = fm.t.close;
-    window.fm1 = fm;                                 // (for debugging from the console)
-    info = await fm.start();
-    $("connect").textContent = "Disconnect";
-    $("backup").disabled = false;
-    await refresh();
+    await openPort(await navigator.serial.requestPort({ filters: [] }));
   } catch (e) {
     log("connect: " + e.message);
-    setStatus(e.name === "NotFoundError" ? "Not connected" : "Could not connect: " + e.message);
     await disconnect(true);
-  }
+    setStatus(e.name === "NotFoundError" ? "Not connected" : "Could not connect: " + e.message);
+  } finally { connecting = false; }
+}
+
+// the last port again, no chooser; tries: the FM-1 may still be starting
+async function reconnect(tries = 1) {
+  if (connecting || installing) return;
+  connecting = true;
+  try {
+    if (fm || port) await disconnect(true);
+    const p = lastPort || (await navigator.serial.getPorts())[0];
+    if (!p) { setStatus("Not connected: choose the FM-1 with Connect"); return; }
+    for (let i = 1; ; i++) {
+      setStatus(i > 1 ? `Reconnecting… (try ${i} of ${tries})` : "Reconnecting…");
+      try { await openPort(p); return; }
+      catch (e) {
+        log(`reconnect: ${e.message}`);
+        await disconnect(true);
+        if (i >= tries) { setStatus("Could not reconnect: " + e.message); return; }
+        await sleep(1000);
+      }
+    }
+  } finally { connecting = false; }
 }
 
 async function disconnect(quiet) {
@@ -173,8 +218,7 @@ async function disconnect(quiet) {
   if (f && f._transport_close) await f._transport_close().catch(() => {});
   else if (port) await port.close().catch(() => {});
   port = null;
-  $("connect").textContent = "Connect the FM-1";
-  $("backup").disabled = true;
+  setConnected(false);
   if (!quiet) setStatus("Not connected");
   $("songs").innerHTML = '<tr><td colspan="4" class="empty">Connect the FM-1 to see its songs.</td></tr>';
 }
@@ -205,8 +249,7 @@ async function refresh() {
     dlb.onclick = (ev) => { ev.stopPropagation(); openMenu(dl, s); };
     dl.append(dlb); act.append(dl);
     btn("Rename", () => doRename(s));
-    const del = btn("Delete", () => doDelete(s), "ghost danger");
-    if (s.index === info.slot_loaded) del.disabled = true;
+    btn("Delete", () => doDelete(s), "ghost danger");
     tr.append(name, size, seq, act);
     tb.append(tr);
   }
@@ -263,8 +306,12 @@ const doRename = (s) => guard("Rename", async () => {
 });
 
 const doDelete = (s) => guard("Delete", async () => {
-  if (!confirm(`Delete "${s.name}" from the FM-1?`)) return;
-  await fm.remove(s.index);
+  const loaded = s.index === info.slot_loaded;
+  let q = `Delete "${s.name}" from the FM-1?`;
+  if (loaded) q += "\n\nIt is the song loaded on the FM-1: the FM-1 loads xmod-theme (built in) instead." +
+                   (info.changed ? " Its unsaved changes are lost." : "");
+  if (!confirm(q)) return;
+  await fm.remove(s.index, loaded && !!info.changed);
   await refresh();
 });
 
@@ -298,14 +345,22 @@ async function addFiles(files) {
       let img = it.data;
       const isFile = new TextDecoder().decode(img.subarray(0, 4)) !== "FMTK";
       if (isFile) { j.msg("converting…"); img = conv.toImage(it.data); }
-      const room = (info.flash_free || 0) - 64;      // (the slot's header)
+      // the biggest song the FM-1 takes now (one piece of free flash; older firmware: the free total)
+      const room = Math.max(0, info.slot_room ?? (info.flash_free || 0) - 64);
+      let small = null;
       if (img.length > room && isFile) {           // too big: 16-bit samples as 8-bit?
-        const small = conv.toImage8(it.data);
+        small = conv.toImage8(it.data);
         if (small.length < img.length && small.length <= room &&
-            confirm(`${it.name} needs ${kb(img.length)}, the FM-1 has ${kb(Math.max(0, room))} free.\n\nStore its 16-bit samples as 8-bit (${kb(small.length)})? They sound a little rougher.`))
+            confirm(`${it.name} needs ${kb(img.length)}, the FM-1 takes up to ${kb(room)} now.\n\nStore its 16-bit samples as 8-bit (${kb(small.length)})? They sound a little rougher.`))
           img = small;
       }
-      if (img.length > room) throw new Error(`does not fit: ${kb(img.length)}, ${kb(Math.max(0, room))} free (delete songs first)`);
+      if (img.length > room) {
+        const least = small && small.length < img.length ? small.length : img.length;
+        const as8 = least < img.length ? ` (${kb(least)} with 8-bit samples)` : "";
+        throw new Error(info.slot_max && least > info.slot_max
+          ? `too big for the FM-1: ${kb(img.length)}${as8}, a song can be up to ${kb(info.slot_max)}`
+          : `does not fit now: ${kb(img.length)}${as8}, the FM-1 takes up to ${kb(room)} (delete songs first)`);
+      }
       const name = fileBase(it.name).replace(/^\d+ /, "").slice(0, 23);
       j.msg(`sending ${kb(img.length)}…`);
       const slot = await fm.put(img, name, (p) => j.bar(p));
@@ -337,6 +392,26 @@ $("backup").onclick = () => guard("Backup", async () => {
 });
 
 $("connect").onclick = connect;
+$("reconnect").onclick = () => { autoReconnect = true; reconnect(3); };
+$("refresh").onclick = () => guard("Refresh", async () => {
+  $("refresh").disabled = true;
+  try { await refresh(); } finally { $("refresh").disabled = !fm; }
+});
+
+if ("serial" in navigator) {
+  // unplugged or restarting: close our side; when it is back, open it again
+  navigator.serial.addEventListener("disconnect", (e) => {
+    if (!port || e.target !== port) return;
+    disconnect(true).then(() => setStatus(autoReconnect ? "The FM-1 is gone (unplugged or restarting): it reconnects when it is back" : "Not connected"));
+  });
+  navigator.serial.addEventListener("connect", (e) => {
+    if (!autoReconnect || fm || installing) return;
+    lastPort = e.target;
+    setTimeout(() => reconnect(5), 1500);          // (let its console start)
+  });
+  // a port allowed before (this page, earlier): Reconnect opens it without the chooser
+  navigator.serial.getPorts().then((ps) => { if (ps.length && !lastPort) { lastPort = ps[0]; setConnected(!!fm); } }).catch(() => {});
+}
 
 // --------------------------------------------------------------------- firmware
 async function install(pkg) {
@@ -345,11 +420,13 @@ async function install(pkg) {
   let product;
   try { product = productOf(pkg); } catch (e) { txt.textContent = e.message; return; }
   if (!confirm(`Install ${product} on the FM-1? Keep the USB cable in until it is done.`)) return;
+  const wasConnected = autoReconnect;
+  installing = true;                               // (no reconnecting while the update runs)
   if (fm) await disconnect(true);
   const image = logicalImage(pkg);
   let midi;
   try { midi = await navigator.requestMIDIAccess({ sysex: true }); }
-  catch (e) { txt.textContent = "MIDI access was refused (it is needed for the update)."; return; }
+  catch (e) { installing = false; txt.textContent = "MIDI access was refused (it is needed for the update)."; if (wasConnected) reconnect(5); return; }
   const total = Math.ceil(image.length / 512);
   const steps = { start: "starting", verify: "checking", loader: "the update loader starts", write: "writing", reboot: "restarting", done: "done" };
   try {
@@ -358,11 +435,13 @@ async function install(pkg) {
       if (s === "write" && typeof n === "number") bar.style.width = `${Math.min(100, 100 * n / total).toFixed(0)}%`;
       if (s === "done") bar.style.width = "100%";
     });
-    txt.textContent = `Installed: the FM-1 runs ${product}. Connect again to see its songs.`;
+    txt.textContent = `Installed: the FM-1 runs ${product}.` + (wasConnected ? " Reconnecting…" : " Connect again to see its songs.");
   } catch (e) {
     txt.textContent = e.message;
     log("install: " + e.message);
   }
+  installing = false;
+  if (wasConnected) { await sleep(2000); reconnect(10); }
 }
 
 $("fwembedded").onclick = () => install(unb64(FW_B64));

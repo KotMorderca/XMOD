@@ -142,7 +142,7 @@ static void con_err(int e)
 {
     con_puts("err ");
     con_dec(e);
-    con_puts(e == -3 ? " no room\r\n" : e == -4 ? " checksum\r\n" : e == -6 ? " not a song image\r\n" :
+    con_puts(e == -3 ? " no room\r\n" : e == -2 ? " too big for the FM-1 (or a bad size)\r\n" : e == -4 ? " checksum\r\n" : e == -6 ? " not a song image\r\n" :
              e == -5 ? " no flash\r\n" : e == -1 ? " out of memory\r\n" : "\r\n");
 }
 
@@ -216,6 +216,8 @@ static int con_songs(const char *p)                  /* 1: it was one of these c
         con_kv("slots_max", STORE_MAX);
         con_kv("flash_free", (int32_t)(store_free_sectors() * STORE_SECT));
         con_kv("flash_total", (int32_t)(STORE_NSECT * STORE_SECT));
+        con_kv("slot_room", (int32_t)store_room());   /* the biggest song a put takes now */
+        con_kv("slot_max", (int32_t)(STORE_HI - STORE_LO - SLOT_HDR));   /* ... with every other song deleted */
         con_kv("slot_loaded", ui.img_off ? store_find(ui.img_off) : -1);
         con_kv("builtin_loaded", ui.song);
         con_kv("changed", ui.changed);
@@ -299,9 +301,21 @@ static int con_songs(const char *p)                  /* 1: it was one of these c
     } else if (con_cmd(p, "del", &r)) {
         if (!con_slot(r, &v))
             return 1;
-        if (store_slots[v].off == ui.img_off) {
-            con_puts("err in use: load another song first\r\n");
-            return 1;
+        if (store_slots[v].off == ui.img_off) {    /* the song loaded: xmod-theme (built in) instead */
+            int b, k;
+            if (ui.changed && !str_eq(con_rest(r), "force")) {
+                con_puts("err unsaved changes (del I force)\r\n");
+                return 1;
+            }
+            for (b = 0, k = 0; k < NSONGS; k++)
+                if (str_eq(SONGS[k].name, "xmod-theme"))
+                    b = k;
+            if (!NSONGS) {
+                con_puts("err in use: load another song first\r\n");
+                return 1;
+            }
+            ui_load(b);
+            ui_message("SONG DELETED: BUILT-IN LOADED");
         }
         if (store_slots[v].off == ui.slot_off)
             ui.slot_off = 0;

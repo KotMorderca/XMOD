@@ -150,7 +150,7 @@ static void fm1_main(void)
     flash_ok = FL_FAR(fl_jedec_ram)() == 0x856014u;
     irq_restore(f);
     if (flash_ok) {
-        fl_plain_window_init();
+        xmod_plain_window_init();          /* (xmod.c: from the app area's tail, layout.h) */
         ota_boot_cleanup();                     /* staging area left by an update */
     }
     lcd_init();

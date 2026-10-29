@@ -28,6 +28,9 @@ function unb64(s) {
 
 export class FM1Error extends Error {}
 
+// "err -3 no room" -> "no room"; an error with no text keeps its line ("err -2")
+const errText = (ln) => ln.replace(/^err\s*-?\d*\s*/, "") || ln;
+
 export class FM1Songs {
   constructor(transport, log) {
     this.t = transport;
@@ -88,7 +91,7 @@ export class FM1Songs {
     for (;;) {
       const ln = await this.line(ms);
       if (ln === "ok" || ln.startsWith("ok ")) { out.push(ln); return out; }
-      if (ln.startsWith("err")) throw new FM1Error(ln.replace(/^err\s*-?\d*\s*/, "") || ln);
+      if (ln.startsWith("err")) throw new FM1Error(errText(ln));
       if (ln === text) continue;                   // (the echo before raw mode)
       out.push(ln);
     }
@@ -127,7 +130,7 @@ export class FM1Songs {
       await this.send(`get ${index}`);
       const head = await this.line();
       const m = /^data (\d+) ([0-9a-f]+)$/.exec(head);
-      if (!m) throw new FM1Error(head.replace(/^err\s*-?\d*\s*/, ""));
+      if (!m) throw new FM1Error(errText(head));
       const size = +m[1], crc = parseInt(m[2], 16), out = new Uint8Array(size);
       let n = 0;
       for (;;) {
@@ -151,14 +154,14 @@ export class FM1Songs {
       name = name.replace(/[^\x20-\x7e]/g, "_").slice(0, 23);
       await this.send(`put ${image.length} ${crc32(image).toString(16).padStart(8, "0")} ${name}`);
       const r = await this.line(30000);
-      if (r !== "ready") throw new FM1Error(r.replace(/^err\s*-?\d*\s*/, ""));
+      if (r !== "ready") throw new FM1Error(errText(r));
       const CH = 96, WINDOW = 16384;               // (the device acks every 4 KiB)
       let sent = 0, acked = 0;
       while (sent < image.length) {
         if (sent - acked >= WINDOW) {
           const ln = await this.line(30000);
           if (ln.startsWith("ack ")) { acked = +ln.slice(4); continue; }
-          throw new FM1Error(ln.replace(/^err\s*-?\d*\s*/, ""));
+          throw new FM1Error(errText(ln));
         }
         const part = image.subarray(sent, sent + CH);
         await this.send("d " + b64(part));
@@ -170,12 +173,13 @@ export class FM1Songs {
         if (ln.startsWith("ack ")) continue;
         const m = /^saved (\d+)$/.exec(ln);
         if (m) return +m[1];
-        throw new FM1Error(ln.replace(/^err\s*-?\d*\s*/, ""));
+        throw new FM1Error(errText(ln));
       }
     });
   }
 
-  remove(index) { return this.cmd(`del ${index}`); }
+  // the song loaded on the FM-1 too (it loads xmod-theme, built in); force: its unsaved changes go
+  remove(index, force) { return this.cmd(`del ${index}${force ? " force" : ""}`); }
   rename(index, name) { return this.cmd(`ren ${index} ${name.replace(/[^\x20-\x7e]/g, "_").slice(0, 23)}`, 30000); }
   load(index, force) { return this.cmd(`load ${index}${force ? " force" : ""}`); }
 }

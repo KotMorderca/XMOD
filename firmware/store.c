@@ -2,18 +2,22 @@
 /* Song slots in flash. Portable: the FM-1 (ui.c, on Felucca's flash driver) and the simulator
  * (host/uisim.c, a NOR flash in RAM) give the stp_* functions below.
  *
- * The area 0x97000..0xE0000 (Felucca's data store; this firmware does not use Felucca's storage),
- * 73 sectors of 4 KiB. A slot starts on a sector: a 64-byte header, then the song as an FMTK image
- * (engine/song.c song_save), which the player reads in place through the XIP window.
+ * The area 0x48000..0xE0000 (layout.h: the app area's tail, which XMOD's update loader keeps, and
+ * Felucca's data store, which this firmware does not use as Felucca's storage), 152 sectors of 4 KiB.
+ * A slot starts on a sector: a 64-byte header, then the song as an FMTK image (engine/song.c
+ * song_save), which the player reads in place through the XIP window. A sector that is not a slot is
+ * free, whatever is in it (it is erased before it is written): the tail holds the old app after an
+ * update from a bigger one.
  *
  * Writing a song: the image goes into free sectors first, its header last; only then is the old
  * copy marked deleted (its magic programmed to 0, no erase). A power cut leaves the old copy, or
  * both. When the free sectors are there but not in one run, the slots are moved down first
  * (compacting; a power cut in the middle can lose the slot being moved). */
 
-#define STORE_LO 0x97000u
-#define STORE_HI 0xE0000u
+#include "layout.h"
 #define STORE_SECT 0x1000u
+#define STORE_LO XMOD_SONGS_LO
+#define STORE_HI XMOD_SONGS_HI
 #define STORE_NSECT ((STORE_HI - STORE_LO) / STORE_SECT)
 #define STORE_MAX 32
 #define SLOT_MAGIC 0x4C534D46u     /* "FMSL" */
@@ -36,11 +40,11 @@ typedef struct {
     char name[24];
 } store_slot;
 
-static store_slot store_slots[STORE_MAX];
+static store_slot store_slots[STORE_MAX + 1];   /* (+1: a replacing save, until the old copy goes) */
 static int store_n;
 static uint32_t store_seq;
 static uint8_t store_buf[STORE_SECT] STORE_SECTION __attribute__((aligned(4)));
-static uint32_t store_track;       /* a slot offset that store_compact keeps up to date */
+static uint32_t store_track;       /* a slot offset that store_compact keeps up to date; set: replacing it */
 static uint32_t zero4;             /* (in RAM: the flash is programmed with XIP off) */
 
 /* the platform */
@@ -73,6 +77,7 @@ static uint32_t store_crc(uint32_t c, const uint8_t *p, uint32_t n)
 /* ---------------------------------------------------------------- the slots --- */
 static uint32_t slot_sectors(uint32_t size) { return (SLOT_HDR + size + STORE_SECT - 1u) / STORE_SECT; }
 
+
 static int hdr_ok(const slot_hdr *h, uint32_t off)
 {
     return h->magic == SLOT_MAGIC && h->version == SLOT_VERSION && h->size >= sizeof(fmt_header) &&
@@ -89,7 +94,7 @@ static void store_scan(void)
     while (s < STORE_NSECT) {
         slot_hdr h;
         uint32_t off = STORE_LO + s * STORE_SECT;
-        if (stp_read(off, &h, sizeof h) || !hdr_ok(&h, off) || store_n == STORE_MAX) {
+        if (stp_read(off, &h, sizeof h) || !hdr_ok(&h, off) || store_n == STORE_MAX + 1) {
             s++;
             continue;
         }
@@ -139,6 +144,27 @@ static uint32_t store_free_sectors(void)
     for (s = 0; s < STORE_NSECT; s++)
         n += !used[s];
     return n;
+}
+
+/* the biggest song image a put takes now (compacting if it must; 0: none, 32 slots), bytes */
+static uint32_t store_room(void)
+{
+    uint8_t used[STORE_NSECT];
+    uint32_t s, run = 0, best = 0, n = 0;
+    int i;
+    if (store_n >= STORE_MAX)
+        return 0;
+    used_map(used);
+    for (s = 0; s < STORE_NSECT; s++) {
+        run = used[s] ? 0 : run + 1u;
+        if (run > best)
+            best = run;
+    }
+    for (i = 0; i < store_n; i++)              /* after store_compact: the free sectors in one run */
+        n += slot_sectors(store_slots[i].size);
+    if (STORE_NSECT - n > best)
+        best = STORE_NSECT - n;
+    return best ? best * STORE_SECT - SLOT_HDR : 0u;
 }
 
 static int find_run(uint32_t need)             /* the first sector of need free ones, -1 */
@@ -263,6 +289,8 @@ static int store_put_begin(uint32_t size, const char *name, void (*moved)(uint32
     }
     if (s < 0)
         return -3;
+    if (store_n >= STORE_MAX + (store_track ? 1 : 0))
+        return -3;                             /* 32 songs (a replacing save: the old copy goes after it) */
     put_w.base = STORE_LO + (uint32_t)s * STORE_SECT;
     put_w.pos = SLOT_HDR;
     put_w.crc = 0;
@@ -330,6 +358,7 @@ static uint32_t store_save(const char *name, uint32_t old_off, void (*moved)(uin
         store_track = old_off;                 /* (it may move) */
         rc = store_put_begin(size, name, moved);
         old_off = store_track;
+        store_track = 0;
     }
     if (!rc)
         rc = song_save(store_put_data, 0, 0);
@@ -357,6 +386,7 @@ static __attribute__((unused)) uint32_t store_rename(int i, const char *name, vo
     store_track = old;
     rc = store_put_begin(size, name, moved);
     old = store_track;
+    store_track = 0;
     if (!rc)
         rc = store_put_data(0, stp_ptr(old + SLOT_HDR), size);
     if (rc) {

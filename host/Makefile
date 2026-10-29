@@ -43,7 +43,15 @@ test-ci: all test
 	for f in $(SONGS); do $(OUT)/render "$$f" $(OUT)/a.wav --seconds 20 2>/dev/null && 	  $(OUT)/render "$$f" $(OUT)/b.wav --seconds 20 --resave 2>/dev/null && cmp $(OUT)/a.wav $(OUT)/b.wav || exit 1; done
 	@echo test-ci: ok
 
+# XMOD's update loader (tools/build_fw.py patches Felucca's into build/fw/loader/src: build the firmware
+# first): make -C host ldrtest OLD=an.fwsc-with-data-in-the-tail (XMOD 1.0.0's)
+$(OUT)/ldrtest: ldrtest.c ../build/fw/loader/src/ldr_core.c ../firmware/layout.h
+	$(CC) -O1 -g -Wall -Wno-unused-function -o $@ ldrtest.c
+
+ldrtest: $(OUT)/ldrtest
+	$(OUT)/ldrtest $(OLD) ../build/fw/xmod.fwsc
+
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all clean test test-ci
+.PHONY: all clean test test-ci ldrtest
