@@ -21,7 +21,7 @@
 #define FELUCCA_ID "FM-1_666"     /* (build_fw.py passes it too) */
 #endif
 #ifndef FELUCCA_VERSION
-#define FELUCCA_VERSION "XMOD 1.1.0"     /* (build.sh --release passes the tag's) */
+#define FELUCCA_VERSION "XMOD 1.2.0"     /* (build.sh --release passes the tag's) */
 #endif
 #define XMOD_FIRMWARE 1
 

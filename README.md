@@ -123,7 +123,7 @@ Felucca's `tools/get_toolchain.sh` installs it) and the JieLi AC79 SDK
 or set `AC79_SDK`).
 
 ```
-./build.sh [--release 1.1.0]     # -> build/xmod.fwsc (fetches Felucca into third_party/Felucca)
+./build.sh [--release 1.2.0]     # -> build/xmod.fwsc (fetches Felucca into third_party/Felucca)
 make -C host                     # the PC tools
 make -C host test                # song memory and flash song slot tests
 make -C host ldrtest OLD=old.fwsc  # after the firmware build: the update loader keeps the songs
