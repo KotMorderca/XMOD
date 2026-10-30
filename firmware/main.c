@@ -111,6 +111,7 @@ static void ota_show(uint32_t step, int32_t code)
 static void ota_commit(const uint8_t *parm)
 {
     bootguard.pending = 0;
+    state_put(0u, 0u);             /* an install: XMOD's next start (this build again too) is its first (pages.c) */
     usb_detach();
     fm1_delay_ms(30);
     fm1_enter_update(parm);

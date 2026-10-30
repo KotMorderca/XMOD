@@ -215,12 +215,13 @@ static int con_songs(const char *p)                  /* 1: it was one of these c
         con_kv("slots", store_n);
         con_kv("slots_max", STORE_MAX);
         con_kv("flash_free", (int32_t)(store_free_sectors() * STORE_SECT));
-        con_kv("flash_total", (int32_t)(STORE_NSECT * STORE_SECT));
+        con_kv("flash_total", (int32_t)((STORE_NSECT - 1u) * STORE_SECT));   /* (not the state sector) */
         con_kv("slot_room", (int32_t)store_room());   /* the biggest song a put takes now */
-        con_kv("slot_max", (int32_t)(STORE_HI - STORE_LO - SLOT_HDR));   /* ... with every other song deleted */
+        con_kv("slot_max", (int32_t)(STATE_OFF - STORE_LO - SLOT_HDR));   /* ... with every other song deleted */
         con_kv("slot_loaded", ui.img_off ? store_find(ui.img_off) : -1);
         con_kv("builtin_loaded", ui.song);
         con_kv("changed", ui.changed);
+        con_kv("playing", player_playing());
         con_puts("name ");
         con_puts(song.hdr.name);
         con_puts("\r\nok\r\n");

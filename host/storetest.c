@@ -106,6 +106,7 @@ static int check(int step)
 }
 
 static int rooms;
+static uint32_t state_want;
 
 int main(int argc, char **argv)
 {
@@ -140,6 +141,81 @@ int main(int argc, char **argv)
     if (store_n) {
         printf("old app code in the tail read as a slot\n");
         return 1;
+    }
+    {   /* another firmware's slot (xm4midi: the same slot header, an FMTK image of another version) */
+        uint32_t off = 0x97000u, n = img_n[0];
+        slot_hdr h;
+        uint8_t *b = malloc(n);
+        memcpy(b, img[0], n);
+        ((fmt_header *)b)->version = FMT_VERSION + 1u;
+        memset(&h, 0, sizeof h);
+        h.magic = SLOT_MAGIC;
+        h.version = SLOT_VERSION;
+        h.size = n;
+        h.crc = store_crc(0, b, n);
+        h.seq = 7;
+        strcpy(h.name, "foreign");
+        h.hcrc = store_crc(0, (const uint8_t *)&h, 44);
+        memcpy(flash + off, &h, sizeof h);
+        memcpy(flash + off + SLOT_HDR, b, n);
+        free(b);
+        store_scan();
+        if (store_n) {
+            printf("a slot with another FMTK version read as a song\n");
+            return 1;
+        }
+    }
+    {   /* the state sector: none at first; garbage in it is no state; records; a full sector wraps */
+        uint32_t b, sg, k;
+        if (state_get(&b, &sg) != 0) {
+            printf("state read from an erased sector\n");
+            return 1;
+        }
+        memset(flash + STATE_OFF + 100, 0x5A, 40);
+        if (state_get(&b, &sg) != 0 || state_put(11, 22) || state_get(&b, &sg) != 1 || b != 11 || sg != 22) {
+            printf("state over garbage: %u %u\n", b, sg);
+            return 1;
+        }
+        for (k = 0; k < 600u; k++)
+            if (state_put(11, k)) {
+                printf("state write %u failed\n", k);
+                return 1;
+            }
+        if (state_get(&b, &sg) != 1 || b != 11 || sg != 599) {
+            printf("state after wrapping: %u %u\n", b, sg);
+            return 1;
+        }
+        state_put(5, 0x80000001u);
+    }
+    {   /* a slot an older XMOD put over the state sector: it stays, there is no state */
+        uint32_t off = STATE_OFF - 0x3000u, n = img_n[0], b, sg;
+        int err;
+        static uint8_t keep[0x5000];
+        memcpy(keep, flash + off, sizeof keep);
+        memset(flash + off, 0xFF, sizeof keep);
+        if (n < 0x3000u) {
+            printf("song 0 is too small for this test\n");
+            return 1;
+        }
+        put_w.base = off;                          /* (as store_put_begin would, at that place) */
+        put_w.pos = SLOT_HDR;
+        put_w.crc = 0;
+        put_w.err = 0;
+        put_size = n;
+        memset(put_name, 0, sizeof put_name);
+        memset(store_buf, 0xFF, SLOT_HDR);
+        store_put_data(0, img[0], n);
+        store_put_end(0, 0, &err);
+        if (err || store_n != 1 || state_get(&b, &sg) != -1 || state_put(1, 2) != -5 || store_n != 1) {
+            printf("slot over the state sector: err %d, %d slots\n", err, store_n);
+            return 1;
+        }
+        memcpy(flash + off, keep, sizeof keep);
+        store_scan();
+        if (store_n || state_get(&b, &sg) != 1 || b != 5 || sg != 0x80000001u) {
+            printf("state lost\n");
+            return 1;
+        }
     }
     song_load(img[0], img_n[0]);
     for (step = 0; step < 3000; step++) {
@@ -250,9 +326,29 @@ int main(int argc, char **argv)
                     }
             }
         }
+        if (rnd() % 8 == 0) {                      /* the state, between the songs */
+            state_want = rnd();
+            if (state_put(3, state_want)) {
+                printf("step %d: state write failed\n", step);
+                return 1;
+            }
+        }
         store_scan();
         if (check(step))
             return 1;
+        {
+            uint32_t b, sg;
+            int k;
+            for (k = 0; k < store_n; k++)
+                if (store_slots[k].off + slot_sectors(store_slots[k].size) * STORE_SECT > STATE_OFF) {
+                    printf("step %d: a slot over the state sector\n", step);
+                    return 1;
+                }
+            if (state_want && (state_get(&b, &sg) != 1 || b != 3 || sg != state_want)) {
+                printf("step %d: state lost\n", step);
+                return 1;
+            }
+        }
     }
     printf("ok: 3000 steps, %d saves, %d with no room, %d slots at the end, %d slot moves (compacting), %d renames\n",
            saves, full, store_n, moves, renames);

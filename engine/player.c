@@ -494,7 +494,8 @@ static void more_effects_tick0(channel_t *ch)    /* called even when the channel
     }
     case 0xD:                                      /* pattern break */
         p = (uint8_t)(((p >> 4) * 10) + (p & 0x0F));
-        P.pbreak_pos = p <= 63 ? p : 0;
+        P.pbreak_pos = p;          /* (FT2: > 63 -> 0; ModPlug / OpenMPT: any row the next pattern has,
+                                    * else 0, get_next_pos: the same for 64-row patterns) */
         P.posjump_flag = 1;
         break;
     case 0xE:

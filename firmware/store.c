@@ -12,7 +12,10 @@
  * Writing a song: the image goes into free sectors first, its header last; only then is the old
  * copy marked deleted (its magic programmed to 0, no erase). A power cut leaves the old copy, or
  * both. When the free sectors are there but not in one run, the slots are moved down first
- * (compacting; a power cut in the middle can lose the slot being moved). */
+ * (compacting; a power cut in the middle can lose the slot being moved).
+ *
+ * The area's last sector is the state (state_get, state_put): what the firmware keeps between starts.
+ * No new slot goes there; a slot an older XMOD put over it stays, and there is no state until it goes. */
 
 #include "layout.h"
 #define STORE_SECT 0x1000u
@@ -77,11 +80,20 @@ static uint32_t store_crc(uint32_t c, const uint8_t *p, uint32_t n)
 /* ---------------------------------------------------------------- the slots --- */
 static uint32_t slot_sectors(uint32_t size) { return (SLOT_HDR + size + STORE_SECT - 1u) / STORE_SECT; }
 
+#define STATE_OFF (STORE_HI - STORE_SECT)
+static int state_free(void);
 
+
+/* a slot, holding an FMTK image this firmware reads (other firmwares, e.g. xm4midi, write the same
+ * slot header around another FMTK version: their slots are free sectors here) */
 static int hdr_ok(const slot_hdr *h, uint32_t off)
 {
-    return h->magic == SLOT_MAGIC && h->version == SLOT_VERSION && h->size >= sizeof(fmt_header) &&
-           off + SLOT_HDR + h->size <= STORE_HI && h->hcrc == store_crc(0, (const uint8_t *)h, 44);
+    fmt_header f;
+    if (!(h->magic == SLOT_MAGIC && h->version == SLOT_VERSION && h->size >= sizeof(fmt_header) &&
+          off + SLOT_HDR + h->size <= STORE_HI && h->hcrc == store_crc(0, (const uint8_t *)h, 44)))
+        return 0;
+    return !stp_read(off + SLOT_HDR, &f, sizeof f) && f.magic == FMT_MAGIC && f.version == FMT_VERSION &&
+           f.size == h->size;
 }
 
 static void store_scan(void)
@@ -131,6 +143,7 @@ static void used_map(uint8_t *used)
     int i;
     uint32_t k;
     memset(used, 0, STORE_NSECT);
+    used[STORE_NSECT - 1u] = 1;                /* the state */
     for (i = 0; i < store_n; i++)
         for (k = 0; k < slot_sectors(store_slots[i].size); k++)
             used[(store_slots[i].off - STORE_LO) / STORE_SECT + k] = 1;
@@ -160,10 +173,10 @@ static uint32_t store_room(void)
         if (run > best)
             best = run;
     }
-    for (i = 0; i < store_n; i++)              /* after store_compact: the free sectors in one run */
-        n += slot_sectors(store_slots[i].size);
-    if (STORE_NSECT - n > best)
-        best = STORE_NSECT - n;
+    for (i = 0; i < store_n; i++)              /* after store_compact: the free sectors in one run, */
+        n += slot_sectors(store_slots[i].size);   /* below the state */
+    if (n < STORE_NSECT && STORE_NSECT - n - 1u > best)
+        best = STORE_NSECT - n - 1u;
     return best ? best * STORE_SECT - SLOT_HDR : 0u;
 }
 
@@ -271,6 +284,7 @@ static int store_sink(void *ctx, const void *d, uint32_t n)
 static store_wr put_w;
 static uint32_t put_size;
 static char put_name[24];
+static uint32_t put_seq;           /* set: the new slot's seq (a rename keeps it), else the next one */
 
 static int store_put_begin(uint32_t size, const char *name, void (*moved)(uint32_t, uint32_t))
 {
@@ -332,7 +346,7 @@ static uint32_t store_put_end(uint32_t crc, int check, int *err)
         h.version = SLOT_VERSION;
         h.size = put_size;
         h.crc = put_w.crc;
-        h.seq = store_seq + 1u;
+        h.seq = put_seq ? put_seq : store_seq + 1u;
         memcpy(h.name, put_name, sizeof h.name);
         h.hcrc = store_crc(0, (const uint8_t *)&h, 44);
         rc = stp_prog(put_w.base, &h, sizeof h);
@@ -393,11 +407,84 @@ static __attribute__((unused)) uint32_t store_rename(int i, const char *name, vo
         *err = rc;
         return 0;
     }
+    put_seq = store_slots[store_find(old)].seq;   /* (the same song: pages.c's state names it by seq) */
     off = store_put_end(crc, 1, err);
+    put_seq = 0;
     if (off) {
         store_delete(store_find(old));
         if (moved)
             moved(old, off);
     }
     return off;
+}
+
+/* -------------------------------------------------------------------- the state --- */
+/* 16-byte records in the state sector, the last good one counts; the sector full (or with a record a
+ * power cut broke): erased, written from the start. A power cut in the erase loses the state. */
+#define STATE_MAGIC 0x54534D58u    /* "XMST" */
+#define STATE_N (STORE_SECT / 16u)
+typedef struct { uint32_t magic, build, song, crc; } state_rec;
+
+static int state_free(void)        /* no slot over the state sector (the slots are in offset order) */
+{
+    return !store_n || store_slots[store_n - 1].off + slot_sectors(store_slots[store_n - 1].size) * STORE_SECT <= STATE_OFF;
+}
+
+/* the last good record into *last (magic 0: none); returns where the next one goes, -1: erase
+ * first, -2: no state (no flash, a slot over it) */
+static int state_scan(state_rec *last)
+{
+    uint32_t i;
+    int dirty = 0;
+    memset(last, 0, sizeof *last);
+    if (!stp_ok() || !state_free())
+        return -2;
+    for (i = 0; i < STATE_N; i++) {
+        state_rec r;
+        if (stp_read(STATE_OFF + i * 16u, &r, sizeof r))
+            return -2;
+        if ((r.magic & r.build & r.song & r.crc) == 0xFFFFFFFFu)
+            return dirty ? -1 : (int)i;
+        if (r.magic == STATE_MAGIC && r.crc == store_crc(0, (const uint8_t *)&r, 12))
+            *last = r;
+        else
+            dirty = 1;
+    }
+    return -1;
+}
+
+/* 1 and *build, *song; 0: none; -1: no state (no flash, a slot over it) */
+static int state_get(uint32_t *build, uint32_t *song_id)
+{
+    state_rec r;
+    if (state_scan(&r) == -2)
+        return -1;
+    if (r.magic != STATE_MAGIC)
+        return 0;
+    *build = r.build;
+    *song_id = r.song;
+    return 1;
+}
+
+/* 0, -5 no state, else the flash's error. The same as the last record: nothing written. */
+static int state_put(uint32_t build, uint32_t song_id)
+{
+    state_rec last, r;
+    int pos = state_scan(&last), rc;
+    if (pos == -2)
+        return -5;
+    if (last.magic == STATE_MAGIC && last.build == build && last.song == song_id && pos >= 0)
+        return 0;
+    r.magic = STATE_MAGIC;
+    r.build = build;
+    r.song = song_id;
+    r.crc = store_crc(0, (const uint8_t *)&r, 12);
+    if (pos < 0) {
+        rc = stp_erase(STATE_OFF);
+        stp_idle();
+        if (rc)
+            return rc;
+        pos = 0;
+    }
+    return stp_prog(STATE_OFF + (uint32_t)pos * 16u, &r, sizeof r);
 }

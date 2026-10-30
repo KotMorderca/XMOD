@@ -11,6 +11,8 @@
  *   hold:BTN        press a button and keep it down;  release:BTN  let it go
  *   turn:ENC:N      turn an encoder N steps (SELECT ALGO PRESET K1 K2 K3 K4; N may be negative)
  *   key:N           press note key N (0 = F3 .. 26 = G5)
+ *   keydown:N       press note key N and keep it down;  keyup:N  let it go
+ *   voices          print the channels that sound (channel:period/vvolume)
  *   shot:FILE.png   save the screen (2x); shot1:FILE.png 1:1
  *   dump            print the screen's text
  */
@@ -211,11 +213,14 @@ static void frame(ui_in *in)
     pages_frame(in);
 }
 
+static uint32_t keys_held;         /* (keydown / keyup) */
+
 static void frame_idle(void)
 {
     ui_in in;
     memset(&in, 0, sizeof in);
     in.held = held;
+    in.notes_held = keys_held;
     frame(&in);
 }
 
@@ -253,6 +258,28 @@ static int step(const char *s)
         in.enc[e] = atoi(c + 1);
         in.held = held;
         frame(&in);
+    } else if (!strncmp(s, "keydown:", 8) || !strncmp(s, "keyup:", 6)) {
+        int k = atoi(strchr(s, ':') + 1);
+        if (k < 0 || k > 26)
+            return -1;
+        if (s[3] == 'd') {
+            keys_held |= 1u << k;
+            in.notes = 1u << k;
+        } else {
+            keys_held &= ~(1u << k);
+        }
+        in.notes_held = keys_held;
+        in.held = held;
+        frame(&in);
+    } else if (!strcmp(s, "voices")) {
+        const player_state *st = player_get_state();
+        int c;
+        frame_idle();
+        printf("voices:");
+        for (c = 0; c < st->num_channels; c++)
+            if (st->ch[c].active)
+                printf(" %d:%u/v%u", c + 1, st->ch[c].period, st->ch[c].final_vol);
+        printf("\n");
     } else if (!strncmp(s, "key:", 4)) {
         int k = atoi(s + 4);
         if (k < 0 || k > 26)

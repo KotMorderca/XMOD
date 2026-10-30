@@ -17,7 +17,7 @@ firmware's own pages and player on a picture of the FM-1 (mouse or computer keyb
 - **Instruments and samples**: volume and panning envelopes, loops, volume, panning, finetune.
 - **Mixer**: meters, mute and solo on the white keys, global volume, tempo, amplification.
 - **Effect help** on the screen for every XM effect.
-- **Songs in flash**: save, load, new, rename, delete; up to 32 songs in 608 KB.
+- **Songs in flash**: save, load, new, rename, delete; up to 32 songs in 604 KB.
 - **Over USB**: the song manager (serial), MIDI clock out and transport in, the FM-1 as an audio
   input (44.1 / 48 kHz).
 - Two example songs built in, made for XMOD (`songs/`, CC0).
@@ -33,6 +33,8 @@ replaces the FM-1's boot loader: XMOD is not tested on it) and over other custom
 entry: the next update starts as usual). If the FM-1 ever does not start: hold OCT- and OCT+ at
 power-on (update mode), then install again. After installing XMOD from Felucca the FM-1 may not
 restart by itself: switch it off and on.
+
+The first start after an install plays xmod-theme. Later starts load the song played last, stopped.
 
 **Your data.** XMOD keeps its songs in 0x48000..0xE0000: the end of the app area (which XMOD's own app
 leaves free and XMOD's updates keep) and the flash area other firmwares use for their projects
@@ -69,7 +71,7 @@ has the same controls, to learn them before installing.
 | SELECT | stopped: rows (EDIT held: by 16); playing: jump by positions |
 | ALGORITHM | the cursor field and channel (EDIT held: by channel) |
 | KNOB 1..4 | edit mode: instrument, volume column, effect, parameter of the cell (EDIT held: by 16) |
-| note keys | play on the cursor's channel; edit mode: enter the note with the PRESETS instrument, the cursor moves the edit step |
+| note keys | polyphonic: the first key plays on the cursor's channel, more keys held on the song's next free channels; edit mode: the cursor's channel's note goes into the cell with the PRESETS instrument (a chord: its first note), the cursor moves the edit step |
 | PRESETS | the instrument notes go in with; EDIT+PRESETS: the edit step |
 | OCT-/OCT+ | octave (the C in the middle of the keys is C of the octave shown) |
 | SEL | note off (===); held while moving: select a block |
@@ -95,8 +97,8 @@ Over the USB cable the FM-1 is a MIDI device, a serial port (the song manager) a
 
 - MIDI out: Start when playback starts, a clock per replayer tick (24 per quarter note at the song's
   BPM), Stop.
-- MIDI in: Start (the song from the top), Continue, Stop; notes play the PRESETS instrument on the
-  cursor's channel.
+- MIDI in: Start (the song from the top), Continue, Stop; notes play the PRESETS instrument,
+  polyphonic as the note keys.
 - Audio: the music at full level (MASTER sets only the speaker and the headphones), 44.1 or 48 kHz.
 
 On Windows the FM-1's serial port may get a COM number another device already uses; give it another
@@ -109,7 +111,7 @@ one in Device Manager (Ports, the FM-1's USB serial device, Port Settings, Advan
 | channels | 32 (XM's maximum) |
 | patterns | 256, up to 256 rows each; packed in 176 KB of RAM |
 | instruments, samples | 128 instruments, 2048 samples; the sample data in flash |
-| songs in flash | 32 songs, 608 KB for all of them (one song up to 608 KB) |
+| songs in flash | 32 songs, 604 KB for all of them (one song up to 604 KB) |
 | undo | 2048 changes |
 | clipboard | 256 rows x 32 channels |
 

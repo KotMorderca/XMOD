@@ -12,7 +12,16 @@
  *   ENV, LFO  the instrument's envelopes and the sample (pages_ins.c)
  *
  * The platform gives: fm1_ms, the gfx.c drawing, SONGS / NSONGS, and the sys_*, stp_* and glo_*
- * functions declared below. */
+ * functions declared below.
+ *
+ * Starting: the first start after an install (main.c ota_commit clears the state; a new build,
+ * XMOD_BUILD_ID from tools/build_fw.py, counts as one too) loads and plays SONGS[0], xmod-theme;
+ * later starts load the song last played (store.c's state), stopped. */
+
+#ifndef XMOD_BUILD_ID
+#define XMOD_BUILD_ID 1u           /* (the simulators) */
+#endif
+#define REF_BUILTIN 0x80000000u    /* a song in the state: REF_BUILTIN | SONGS index, or a slot's seq */
 
 /* panel ids: matrix buttons 0..13, encoders 0..6 (Felucca panel.c PANEL_DEFAULT; PLAY and REC
  * measured on hardware, the rest Felucca's map) */
@@ -127,7 +136,8 @@ static struct {
     uint32_t sel_t0, arp_t0;
     uint32_t notes_held;           /* the note keys down last frame */
     int8_t key_chan[27];           /* the channel a held key plays on, -1: none */
-    int8_t chan_key[FMT_MAX_CHANNELS];   /* the key that played last on a channel */
+    int8_t chan_key[FMT_MAX_CHANNELS];   /* the held key a channel plays, -1: none */
+    uint8_t chan_midi[FMT_MAX_CHANNELS]; /* the MIDI note a channel plays, 0: none */
     uint8_t looping;               /* playing one pattern over (EDIT+PLAY) */
     uint8_t env_pt, smp_k;         /* ENV: the envelope point; LFO: the sample in the instrument */
     uint8_t sep_i;                 /* GLO: the stereo separation step (ProTracker mode): 1 = 20 % */
@@ -240,8 +250,10 @@ static void ui_load_image(const uint8_t *img, uint32_t size, int builtin, uint32
     ui.changed = 0;
     for (k = 0; k < 27; k++)
         ui.key_chan[k] = -1;
-    for (k = 0; k < FMT_MAX_CHANNELS; k++)
+    for (k = 0; k < FMT_MAX_CHANNELS; k++) {
         ui.chan_key[k] = -1;
+        ui.chan_midi[k] = 0;
+    }
     ui.field = 0;
     undo_clear();
     count_notes();
@@ -252,10 +264,14 @@ static void ui_load_image(const uint8_t *img, uint32_t size, int builtin, uint32
 
 static void ui_load(int i) { ui_load_image(SONGS[i].data, SONGS[i].size, i, 0); }
 
+static void state_played(void);
+
 static void ui_play_loop(int on, int loop)   /* from the view's position; loop: this pattern only */
 {
     if (!ui.loaded_ok)
         return;
+    if (on)
+        state_played();
     ui.looping = (uint8_t)(on && loop);
     sys_audio_hold();
     player_loop_pattern(on && loop);
@@ -413,6 +429,30 @@ static void put_fx_help(gline *l, uint32_t x, uint32_t e, uint32_t p, uint8_t at
 
 #include "edit.c"
 #include "store.c"
+
+/* the song loaded, as the state names it (0: one with no slot, e.g. after NEW) */
+static uint32_t song_ref(void)
+{
+    int k;
+    if (ui.song >= 0)
+        return REF_BUILTIN | (uint32_t)ui.song;
+    k = ui.slot_off ? store_find(ui.slot_off) : -1;
+    return k >= 0 ? store_slots[k].seq : 0u;
+}
+
+static void state_played(void)     /* playback starts: the song is the one the next start loads */
+{
+    uint32_t r = song_ref();
+    if (r)
+        state_put(XMOD_BUILD_ID, r);
+}
+
+static void state_follow(uint32_t from, uint32_t to)   /* the last played song is now `to` (saved) */
+{
+    uint32_t b, r;
+    if (from && to && from != to && state_get(&b, &r) == 1 && r == from)
+        state_put(XMOD_BUILD_ID, to);
+}
 
 /* ---------------------------------------------------------------- the screen --- */
 #define NL 30
@@ -574,7 +614,25 @@ static uint8_t key_note(uint32_t k)
     return (uint8_t)clampi(12 * ((int32_t)ui.oct - 1) + 5 + (int32_t)k + 1, 1, 96);
 }
 
-/* the note keys: play on the cursor's channel; in edit mode on HOME also into the cell */
+/* the channel for a new key or MIDI note: the cursor's when it plays none; else the next channel that
+ * plays none (unmuted ones first); all busy: the cursor's again */
+static uint32_t voice_chan(uint32_t nch)
+{
+    uint32_t i;
+    int pass;
+    if (ui.chan_key[ui.chan] < 0 && !ui.chan_midi[ui.chan])
+        return ui.chan;
+    for (pass = 0; pass < 2; pass++)
+        for (i = 1; i < nch; i++) {
+            uint32_t c = (ui.chan + i) % nch;
+            if (ui.chan_key[c] < 0 && !ui.chan_midi[c] && (pass || !ui.off[c]))
+                return c;
+        }
+    return ui.chan;
+}
+
+/* the note keys: polyphonic, over the song's channels (voice_chan); in edit mode on HOME the note
+ * played on the cursor's channel goes into the cell (a chord's first; the others only sound) */
 static void keys_play(const ui_in *in, const player_state *st, int record)
 {
     uint32_t k, up = ui.notes_held & ~in->notes_held, nch = song.hdr.num_channels;
@@ -590,10 +648,12 @@ static void keys_play(const ui_in *in, const player_state *st, int record)
         }
         if (((in->notes >> k) & 1u) && ui.chan < nch) {
             uint8_t n = key_note(k);
-            player_jam(ui.chan, n, ui.ins);
-            ui.key_chan[k] = (int8_t)ui.chan;
-            ui.chan_key[ui.chan] = (int8_t)k;
-            if (record && ui.edit) {
+            uint32_t v = voice_chan(nch);
+            player_jam((int)v, n, ui.ins);
+            ui.key_chan[k] = (int8_t)v;
+            ui.chan_key[v] = (int8_t)k;
+            ui.chan_midi[v] = 0;
+            if (record && ui.edit && v == ui.chan) {
                 song_cell *c = cell_edit(ui.vpat, ui.row, ui.chan, -1);
                 if (c) {
                     c->note = n;
@@ -1142,6 +1202,7 @@ static void save_song(void)
         for (i = 0; u[i]; i++)
             song.hdr.name[i] = u[i];
     }
+    uint32_t was = song_ref();
     ui_play(0);
     sys_audio_hold();              /* (the flash writes stop the audio anyway) */
     off = store_save(song.hdr.name, ui.slot_off, slot_moved, &err);
@@ -1151,6 +1212,7 @@ static void save_song(void)
         ui.song = -1;
         ui.changed = 0;
         ui.song_cur = store_find(off);
+        state_follow(was, song_ref());
         ui_message("SAVED");
     } else {
         ui_message(err == -3 ? "NO ROOM IN FLASH" : err == -1 ? "OUT OF MEMORY" : err == -5 ? "NO FLASH" :
@@ -1293,7 +1355,7 @@ static void save_draw(void)
 {
     int n = save_count();
     uint32_t i, x, top = ui.song_cur >= SAVE_ROWS ? (uint32_t)ui.song_cur - SAVE_ROWS + 1u : 0u;
-    uint32_t free_k = store_free_sectors() * 4u, all_k = STORE_NSECT * 4u;
+    uint32_t free_k = store_free_sectors() * 4u, all_k = (STORE_NSECT - 1u) * 4u;   /* (not the state sector) */
     flash_bar fb;
     gline *l = &L[0];
     title_bar(l, "SONGS");
@@ -1510,7 +1572,7 @@ static void pages_leds(const player_state *st, const ui_in *in)
 }
 
 /* a USB-MIDI event packet from the computer: Start / Continue / Stop drive the playback, notes play
- * the PRESETS instrument on the cursor's channel (as the keys do) */
+ * the PRESETS instrument, polyphonic as the keys (voice_chan) */
 static void ui_midi(uint32_t pkt)
 {
     uint32_t cin = pkt & 15u, st = (pkt >> 8) & 0xFFu, d1 = (pkt >> 16) & 0x7Fu, d2 = (pkt >> 24) & 0x7Fu;
@@ -1528,10 +1590,19 @@ static void ui_midi(uint32_t pkt)
         int32_t n = (int32_t)d1 - 11;          /* MIDI 12 (C0) = XM C-0 (1); MIDI 60 = C-4 */
         if (n < 1 || n > 96)
             return;
-        if (cin == 0x9u && d2)
-            player_jam(ui.chan, (uint8_t)n, ui.ins);
-        else
-            player_jam(ui.chan, FMT_NOTE_OFF, 0);
+        if (cin == 0x9u && d2) {
+            uint32_t v = voice_chan(song.hdr.num_channels);
+            player_jam((int)v, (uint8_t)n, ui.ins);
+            ui.chan_midi[v] = (uint8_t)d1;     /* (12..107: never 0) */
+            ui.chan_key[v] = -1;
+        } else {
+            uint32_t c;
+            for (c = 0; c < song.hdr.num_channels; c++)
+                if (ui.chan_midi[c] == d1) {
+                    player_jam((int)c, FMT_NOTE_OFF, 0);
+                    ui.chan_midi[c] = 0;
+                }
+        }
     }
 }
 
@@ -1546,14 +1617,28 @@ static void pages_init(void)
     ui.redraw = 1;
     store_scan();
     {
-        int i, best = -1;
-        for (i = 0; i < store_n; i++)
-            if ((best < 0 || store_slots[i].seq > store_slots[best].seq) && store_check(i))
-                best = i;
-        if (best >= 0)
-            ui_load_slot(best);
-        else if (NSONGS > 0)
+        uint32_t build = 0, r = 0;
+        int i, k = -1, st = state_get(&build, &r);
+        if (st == 0 || (st == 1 && build != XMOD_BUILD_ID)) {   /* this build's first start */
+            if (NSONGS > 0) {
+                ui_load(0);            /* (SONGS[0]: xmod-theme, tools/build_fw.py) */
+                ui_play(1);            /* (and the state names it) */
+            }
+            return;
+        }
+        if (st == 1 && (r & REF_BUILTIN) && (r & ~REF_BUILTIN) < (uint32_t)NSONGS) {
+            ui_load((int)(r & ~REF_BUILTIN));
+            return;
+        }
+        for (i = 0; i < store_n; i++)  /* the slot played last; no state: the newest one */
+            if (st == 1 ? store_slots[i].seq == r : k < 0 || store_slots[i].seq > store_slots[k].seq)
+                k = i;
+        if (k >= 0 && store_check(k))
+            ui_load_slot(k);
+        if ((k < 0 || !store_check(k) || !ui.loaded_ok) && NSONGS > 0) {
             ui_load(0);
+            ui.msg = 0;
+        }
     }
 }
 
