@@ -146,9 +146,10 @@ static void enter_uboot(const char *why)
 
 static void fm1_main(void)
 {
-    uint32_t f;
+    uint32_t f, id;
     f = irq_save();
-    flash_ok = FL_FAR(fl_jedec_ram)() == 0x856014u;
+    id = FL_FAR(fl_jedec_ram)();
+    flash_ok = id == 0x856014u || id == 0xB36014u;   /* Puya P25Q80; UC25HQ80 (FM-1s since autumn 2026) */
     irq_restore(f);
     if (flash_ok) {
         xmod_plain_window_init();          /* (xmod.c: from the app area's tail, layout.h) */

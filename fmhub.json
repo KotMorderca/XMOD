@@ -7,5 +7,6 @@
   "play": "https://kotmorderca.github.io/XMOD/sim/",
   "editor": "https://kotmorderca.github.io/XMOD/",
   "cheat": "https://github.com/KotMorderca/XMOD#controls",
-  "image": "docs/xmod.png"
+  "image": "docs/xmod.png",
+  "sounds": "own: the two example songs' samples, synthesised by a script in the repository (CC0)"
 }
