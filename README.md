@@ -151,3 +151,5 @@ steps are listed at the top of `host/uisim.c`).
 | `tools/` | the firmware and page builds, generators (font, splash screen, example songs, tables), `install.cmd`, `songs.py`, `console.py` |
 | `songs/` | the example songs, built into the firmware |
 | `third_party/fonts/` | the Spleen fonts |
+
+You can also try XMOD in the browser, no flashing needed, in the free community [FM-1 Emulator](https://fm1-emulator.atst.tools/).
